@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "readeck-tts"
+version = "0.1.0"
+description = "Turn labeled Readeck articles into Audiobookshelf narrations"
+requires-python = ">=3.12"
+dependencies = ["requests>=2.32.5,<3", "python-dotenv>=1.1,<2", "mutagen>=1.47,<2"]
+
+[project.scripts]
+readeck-tts = "readeck_tts.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["readeck_tts*"]

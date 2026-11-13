@@ -1,0 +1,19 @@
+services:
+  readeck-tts:
+    build: .
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - readeck-tts-data:/data
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  readeck-tts-data:

@@ -1,0 +1,15 @@
+A small experiment in listening
+
+The first useful test of an article reader is an ordinary piece of prose. It should sound comfortable enough that the listener can follow the argument without watching the screen. Perfect delivery is less important than clear sentences, sensible pauses, and a reliable way to return to the original text.
+
+Imagine saving an article over breakfast. You add a label to mark it for listening, then close the browser and leave for work. A background service discovers the article, extracts its readable content, and creates an audio recording. By the time you open your audiobook player, the recording is waiting in the library.
+
+There are several practical details behind that simple experience. The computer generating speech might be different from the computer managing the library. A network connection might disappear halfway through an upload. The article might have a title, several headings, a quotation, and a list of references. None of these details should require the listener to supervise the process.
+
+Keeping a local copy of completed audio makes recovery straightforward. If the library is unavailable, the service waits and tries the upload again later. If speech generation is interrupted, it can repeat the unfinished section. The goal is to make progress steadily, while avoiding unnecessary work whenever a completed result is already available.
+
+Numbers and unfamiliar names are useful parts of a listening test. A report might describe a budget of 250 dollars, a distance of 12 kilometers, or a meeting scheduled for November 15. An article about computers might mention Python, SQLite, or an application programming interface. These examples help reveal where pronunciation needs attention.
+
+For personal listening, a small imperfection is usually manageable. The original article remains the source of truth, and the recording offers another way to enjoy it. A successful system turns a collection of unread pages into something useful during a walk, a train journey, or an afternoon of chores.
+
+This final paragraph marks the end of the test. If it appears in the recording, the service has handled several paragraphs and reached the end of the supplied text. The next step is to try a real article and decide whether the voice and pacing feel right.

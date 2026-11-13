@@ -1,0 +1,15 @@
+.env
+.env.*
+**/*.local.md
+.git
+.aws
+.codex
+.agents
+.DS_Store
+.venv
+**/__pycache__
+data
+*.wav
+*.mp3
+deploy
+tests

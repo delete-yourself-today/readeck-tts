@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+!.env.example
+*.local.md
+*.wav
+*.mp3
+.DS_Store
+/.aws/
+/.codex/
+/.agents/
+data/
+*.egg-info/
+build/
