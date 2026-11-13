@@ -1,19 +1,31 @@
 services:
   readeck-tts:
-    build: .
+    image: ghcr.io/delete-yourself-today/readeck-tts:latest
     restart: unless-stopped
-    init: true
-    env_file: .env
     environment:
-      DATA_DIR: /data
+      # Required: instance URLs (without /api) and API tokens.
+      READECK_URL: "https://readeck.example.com"
+      READECK_API_TOKEN: ""
+      AUDIOBOOKSHELF_URL: "https://audiobookshelf.example.com"
+      AUDIOBOOKSHELF_API_TOKEN: ""
+      # Required: Kokoro API URL, including /v1, reachable from this container.
+      KOKORO_BASE_URL: "http://kokoro:8880/v1"
+
+      # Optional: uncomment to override the application defaults.
+      # READECK_TAG: "tts"
+      # AUDIOBOOKSHELF_LIBRARY: "Podcasts"
+      # AUDIOBOOKSHELF_PODCAST: "Readeck"
+      # Set a folder ID only if the library has multiple folders.
+      # AUDIOBOOKSHELF_FOLDER_ID: ""
+      # KOKORO_API_KEY: ""
+      # KOKORO_MODEL: "kokoro"
+      # KOKORO_VOICE: "af_heart"
+      # POLL_INTERVAL_SECONDS: "300"
+      # RETRY_INTERVAL_SECONDS: "30"
+      # TTS_TIMEOUT_SECONDS: "1800"
+      # LOG_LEVEL: "INFO"
     volumes:
-      - readeck-tts-data:/data
-    stop_grace_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+      - data:/data
 
 volumes:
-  readeck-tts-data:
+  data:

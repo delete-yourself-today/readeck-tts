@@ -7,9 +7,12 @@ inside the existing Audiobookshelf `Podcasts` library.
 ## Configuration
 
 All configuration uses environment variables. For local development, `.env` is
-loaded without overriding existing environment variables. Compose passes `.env`
-into the container. Personal endpoints and credentials belong in `.env`, which
-is ignored by Git and excluded from the image.
+loaded without overriding existing environment variables. The Compose template
+defines settings directly in its `environment` section: fill in the required
+values and uncomment optional settings to override defaults. It does not load
+the development `.env` file. Keep a configured deployment copy outside the
+source checkout so credentials are not committed. The development `.env` is
+ignored by Git and excluded from the image.
 
 Required settings:
 
@@ -36,7 +39,6 @@ Optional settings:
 | `RETRY_INTERVAL_SECONDS` | `30` | Service retry delay, indexing checks, and initial article retry delay |
 | `TTS_TIMEOUT_SECONDS` | `1800` | Socket read timeout while waiting for audio; not an overall job deadline |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
-| `DATA_DIR` | `data` natively; `/data` in Compose | Persistent state and temporary audio directory |
 
 Optional blank values use their defaults; required blank values fail validation.
 A blank `READECK_TAG` therefore still means `tts`, not all articles. Surrounding
@@ -45,6 +47,10 @@ installation subpath but cannot contain credentials, query strings, or fragments
 The podcast name must be a simple folder name of at most 60 characters.
 Repeated whitespace in the podcast name is collapsed to match Audiobookshelf's
 directory naming.
+
+The container stores state and temporary audio in `/data`. Choose its host
+storage through the volume mapping; the Compose template uses a named volume.
+For native development only, `DATA_DIR` can override the default `./data` path.
 
 The layout stays opinionated: one show, one episode per article, MP3 output,
 sequential generation, immediate polling at startup, and audio cleanup after
@@ -55,10 +61,13 @@ configuration changes do not silently alter an in-progress delivery.
 
 ## Run with Docker Compose
 
+Copy [compose.yaml](compose.yaml) into your deployment directory and edit its
+three required URLs and two API tokens. Optional environment variables are
+commented out with their default values. The template uses the published image
+at `ghcr.io/delete-yourself-today/readeck-tts:latest` and a persistent named volume.
+
 ```bash
-cp .env.example .env  # Only for a new installation; preserve existing credentials.
-# Set the three URLs and both API tokens in .env.
-docker compose build
+docker compose pull
 docker compose run --rm readeck-tts check
 docker compose up -d
 docker compose logs -f
@@ -66,20 +75,21 @@ docker compose logs -f
 
 The worker needs outbound access to Readeck, Kokoro, and Audiobookshelf. It exposes
 no ports. The Kokoro hostname must resolve and be reachable from the container.
-The Mac's Kokoro server stays separate and does not need to mount this volume.
+The Kokoro server stays separate and does not need to mount this volume.
 
 ### Published image
 
 The [image workflow](.github/workflows/docker-image.yml) builds and publishes
-`ghcr.io/<owner>/<repository>:latest` plus a `sha-<commit>` tag on pushes to
+`ghcr.io/delete-yourself-today/readeck-tts:latest` plus a `sha-<commit>` tag on pushes to
 `main`. It builds Linux AMD64 and ARM64 images, uses GitHub Actions caching,
 and authenticates using the repository's built-in `GITHUB_TOKEN`; no separate
 registry credentials are needed. Pull requests do not trigger this workflow.
 Action versions are pinned to verified commit hashes.
 
-After a successful publish, replace `build: .` in Compose with
-`image: ghcr.io/<owner>/<repository>:latest` to use the published image.
-GHCR image names are lowercase. For anonymous pulls, set the package's
+The Compose template uses `latest`; replace the tag with a published
+`sha-<commit>` tag to pin a particular build. Forks publish under their own
+lowercase `ghcr.io/<owner>/<repository>` name and should update the template.
+For anonymous pulls, set the package's
 visibility to public in GitHub's package settings. See GitHub's
 [container registry guide](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
 
@@ -103,9 +113,10 @@ take several minutes. A nonempty extracted article is required.
 
 ## State and recovery
 
-SQLite, text/voice snapshots, and audio live in the `readeck-tts-data` named
-volume. Keep this volume across deployments and back it up while the worker is
-stopped. `docker compose down` preserves it; `docker compose down -v` deletes
+SQLite, text/voice snapshots, and audio live in the `data` named volume
+(prefixed with the Compose project name). Keep this volume across deployments
+and back it up while the worker is stopped. `docker compose down` preserves it;
+`docker compose down -v` deletes
 the ledger and audio cache. Do not mount it from a network filesystem.
 
 Jobs are unique per Readeck instance URL and article ID. IDs and sync checkpoints
@@ -161,9 +172,9 @@ redirect.
 
 Compose's `restart: unless-stopped` will retry a process that exits. For a
 persistent configuration problem the container may therefore show as
-restarting; inspect `docker compose logs`. Fix `.env`, then use
-`docker compose up -d --force-recreate` to refresh environment variables.
-`docker compose restart` alone does not reload `.env`. Service outages during
+restarting; inspect `docker compose logs`. Fix the environment values in your
+deployment's `compose.yaml`, then use `docker compose up -d` to apply them.
+`docker compose restart` alone does not apply environment changes. Service outages during
 `run` keep the process alive and pause work for `RETRY_INTERVAL_SECONDS` before
 checking again. `once` and `check` report the failure and exit nonzero.
 
@@ -215,6 +226,8 @@ worker to be stopped. It exits nonzero if cleanup is still pending.
 ## Local development
 
 ```bash
+cp .env.example .env  # For a new development checkout; preserve existing credentials.
+# Set the three URLs and both API tokens in .env.
 python3 -m venv .venv
 .venv/bin/pip install -e .
 .venv/bin/python -m unittest discover -s tests -v
@@ -222,6 +235,10 @@ python3 -m venv .venv
 .venv/bin/python -m readeck_tts once --max-jobs 1
 .venv/bin/python -m readeck_tts run
 ```
+
+To test a local image build instead of the published image, use
+`docker build -t readeck-tts:dev .` and set `image: readeck-tts:dev` in a separate
+deployment copy of the Compose template.
 
 Native development supports Linux/macOS. The local data directory defaults to
 `./data`; Compose uses `/data` inside its named volume. These are separate
