@@ -4,7 +4,7 @@ from urllib.parse import quote
 
 import requests
 
-from .text import article_text
+from .text import article_blocks
 
 
 log = logging.getLogger(__name__)
@@ -83,9 +83,9 @@ class Readeck(API):
     def bookmark(self, article_id):
         return self.json("GET", "/bookmarks/" + quote(article_id, safe=""))
 
-    def text(self, article_id):
+    def article(self, article_id):
         with self.request("GET", "/bookmarks/" + quote(article_id, safe="") + "/article") as response:
-            return article_text(response.text)
+            return article_blocks(response.text)
 
 
 class Kokoro(API):
@@ -95,7 +95,7 @@ class Kokoro(API):
 
     def generate(self, snapshot, output):
         with self.request("POST", "/audio/speech", json={
-            "input": snapshot["text"], "model": snapshot["model"],
+            "input": snapshot.get("speech_input", snapshot["text"]), "model": snapshot["model"],
             "voice": snapshot["voice"], "response_format": "mp3", "speed": 1.0,
         }, stream=True, timeout=(10, self.timeout)) as response:
             try:

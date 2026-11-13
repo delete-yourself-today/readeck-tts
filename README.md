@@ -106,6 +106,23 @@ allowed. Whitespace around names is trimmed, duplicate names count once, and
 empty entries are rejected. Every listed voice must be available at the endpoint.
 The chosen voice is saved in the job snapshot and reused across retries and
 restarts, even if the configured list changes.
+
+New jobs preserve headings (including their levels), paragraphs, list items,
+and quotations from Readeck's article HTML. Narration adds explicit pauses:
+1 second after the title, 0.8 seconds before headings, 0.6 seconds after headings
+and around quotations, 0.4 seconds between paragraphs, and 0.3 seconds between
+list items. Adjacent boundaries use the longer pause rather than stacking them.
+HTML source line wraps and empty containers do not add pauses. Speed remains
+`1.0`; playback speed can be adjusted in your player.
+
+The Kokoro renderer uses the server's
+[`[pause:1s]` syntax](https://github.com/remsky/Kokoro-FastAPI#text-control),
+so the endpoint must support inline pause tokens. Very long articles scale down
+pauses to approximately 240 seconds total, below the server's default 300-second
+pause budget. Structured blocks, plain text, and the rendered speech input are
+saved in the job snapshot; retries reuse that exact input. Existing snapshots
+continue using their original input, and completed articles are not regenerated.
+
 `KOKORO_BASE_URL` includes `/v1`. `KOKORO_API_KEY` is optional. The Readeck and
 Audiobookshelf base URLs should not include `/api`. No hosted OpenAI calls are
 made. Only the Kokoro-compatible HTTP speech endpoint is used.

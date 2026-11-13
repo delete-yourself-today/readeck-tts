@@ -11,6 +11,7 @@ from mutagen.id3 import COMM, TALB, TCON, TDRC, TIT2, TPE1, TXXX
 from .cache import cleanup_completed
 from .clients import Audiobookshelf, ConfigurationError, Kokoro, Readeck, RemoteError
 from .state import State
+from .text import kokoro_input
 
 
 log = logging.getLogger(__name__)
@@ -85,13 +86,15 @@ class Worker:
         if not bookmark.get("has_article"):
             self.state.update(job["key"], state="ignored", error="Bookmark has no extracted article")
             return None
-        text = self.readeck.text(job["article_id"])
-        if not text.strip():
+        blocks = self.readeck.article(job["article_id"])
+        if not blocks:
             raise RuntimeError("Readeck returned an empty article")
         title = bookmark.get("title") or "Untitled"
+        blocks = [{"type": "title", "text": title}] + blocks
         author = ", ".join(bookmark.get("authors") or []) or bookmark.get("site_name") or "Readeck"
         snapshot = {
-            "text": title + "\n\n" + text, "title": title,
+            "text": "\n\n".join(block["text"] for block in blocks), "title": title,
+            "blocks": blocks, "speech_input": kokoro_input(blocks),
             "author": safe_component(author), "url": bookmark.get("url", ""),
             "article_id": job["article_id"], "voice": random.choice(self.config.voices), "model": self.config.model,
             "created": bookmark.get("created", ""),

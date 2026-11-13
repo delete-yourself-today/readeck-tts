@@ -7,10 +7,10 @@ from unittest.mock import Mock
 from unittest.mock import patch
 from mutagen.mp3 import MP3
 
-from readeck_tts.clients import Audiobookshelf, ConfigurationError, RemoteError
+from readeck_tts.clients import Audiobookshelf, ConfigurationError, Kokoro, Readeck, RemoteError
 from readeck_tts.config import Config
 from readeck_tts.state import State, data_lock, job_key
-from readeck_tts.text import article_text
+from readeck_tts.text import article_blocks, article_text
 from readeck_tts.worker import Worker
 from readeck_tts.__main__ import main
 
@@ -31,8 +31,8 @@ class FakeReadeck:
     def bookmark(self, article_id):
         return self.metadata
 
-    def text(self, article_id):
-        return "A paragraph of article text."
+    def article(self, article_id):
+        return [{"type": "paragraph", "text": "A paragraph of article text."}]
 
 
 class FakeKokoro:
@@ -137,6 +137,35 @@ class RecoveryTests(unittest.TestCase):
         self.retry_now()
         self.assertEqual(self.kokoro.calls, 2)
         self.assertEqual(len(self.abs.uploads), 1)
+
+    def test_structure_and_pause_input_are_frozen_across_failed_generation(self):
+        blocks = article_blocks('<p>Opening.</p><h2>A section</h2><p>Body.</p>')
+        self.readeck.article = Mock(return_value=blocks)
+        self.kokoro.fail = True
+        with self.assertRaises(RemoteError):
+            self.worker.work()
+        snapshot = json.loads(self.job()["snapshot"])
+        self.assertEqual(snapshot["blocks"], [{"type": "title", "text": "Test article"}] + blocks)
+        self.assertEqual(snapshot["text"], "Test article\n\nOpening.\n\nA section\n\nBody.")
+        self.assertEqual(snapshot["speech_input"], "Test article\n\n[pause:1s]\n\nOpening."
+                         "\n\n[pause:0.8s]\n\nA section\n\n[pause:0.6s]\n\nBody.")
+        self.readeck.article.side_effect = AssertionError("Must reuse the saved snapshot")
+        self.worker = Worker(self.config, self.state, self.readeck, self.kokoro, self.abs)
+        self.kokoro.fail = False
+        self.kokoro.generate = Mock(wraps=self.kokoro.generate)
+        self.retry_now()
+        self.assertEqual(self.kokoro.generate.call_args.args[0], snapshot)
+
+    def test_legacy_snapshots_can_still_generate(self):
+        snapshot = self.worker.snapshot(self.job())
+        snapshot.pop("blocks")
+        snapshot.pop("speech_input")
+        self.state.update(self.key, snapshot=json.dumps(snapshot))
+        self.readeck.article = Mock(side_effect=AssertionError("Must reuse the saved snapshot"))
+        self.kokoro.generate = Mock(wraps=self.kokoro.generate)
+        self.worker.work()
+        self.assertEqual(self.kokoro.generate.call_args.args[0], snapshot)
+        self.assertEqual(self.job()["state"], "awaiting_index")
 
     def test_each_new_article_selects_a_voice(self):
         self.worker.config = replace(self.config, voice="af_heart,af_bella")
@@ -368,6 +397,41 @@ class ClientTests(unittest.TestCase):
     def test_article_extraction_preserves_inline_text_and_paragraphs(self):
         self.assertEqual(article_text('<p>Hello <em>world</em>.</p><script>bad()</script><p>A &amp; B</p>'),
                          "Hello world.\n\nA & B")
+
+    def test_readeck_article_returns_structured_html_blocks(self):
+        client = Readeck(self.config)
+        self.addCleanup(client.session.close)
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.text = "<h2>Section</h2><p>Body.</p>"
+        client.request = Mock(return_value=response)
+        self.assertEqual(client.article("id/with/slash"), [
+            {"type": "heading", "text": "Section", "level": 2},
+            {"type": "paragraph", "text": "Body."},
+        ])
+        client.request.assert_called_once_with("GET", "/bookmarks/id%2Fwith%2Fslash/article")
+
+    def test_kokoro_sends_saved_pause_input_and_supports_legacy_plain_text(self):
+        client = Kokoro(self.config)
+        self.addCleanup(client.session.close)
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.iter_content.return_value = [MP3_AUDIO]
+        client.request = Mock(return_value=response)
+        snapshot = {"text": "Title\n\nBody.", "voice": "af_heart", "model": "kokoro"}
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "audio.mp3"
+            for speech_input in (None, "Title\n\n[pause:1s]\n\nBody."):
+                with self.subTest(speech_input=speech_input):
+                    if speech_input:
+                        snapshot["speech_input"] = speech_input
+                    client.generate(snapshot, output)
+                    payload = client.request.call_args.kwargs["json"]
+                    self.assertEqual(payload["input"], speech_input or snapshot["text"])
+                    self.assertEqual(payload["speed"], 1.0)
+                    self.assertEqual(output.read_bytes(), MP3_AUDIO)
 
 
 if __name__ == "__main__":
