@@ -64,10 +64,24 @@ docker compose up -d
 docker compose logs -f
 ```
 
-The image definition is provided for a local build; no image is published. The
-worker needs outbound access to Readeck, Kokoro, and Audiobookshelf. It exposes
+The worker needs outbound access to Readeck, Kokoro, and Audiobookshelf. It exposes
 no ports. The Kokoro hostname must resolve and be reachable from the container.
 The Mac's Kokoro server stays separate and does not need to mount this volume.
+
+### Published image
+
+The [image workflow](.github/workflows/docker-image.yml) builds and publishes
+`ghcr.io/<owner>/<repository>:latest` plus a `sha-<commit>` tag on pushes to
+`main`. It builds Linux AMD64 and ARM64 images, uses GitHub Actions caching,
+and authenticates using the repository's built-in `GITHUB_TOKEN`; no separate
+registry credentials are needed. Pull requests do not trigger this workflow.
+Action versions are pinned to verified commit hashes.
+
+After a successful publish, replace `build: .` in Compose with
+`image: ghcr.io/<owner>/<repository>:latest` to use the published image.
+GHCR image names are lowercase. For anonymous pulls, set the package's
+visibility to public in GitHub's package settings. See GitHub's
+[container registry guide](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
 
 `AUDIOBOOKSHELF_LIBRARY=Podcasts` selects a podcast library.
 `AUDIOBOOKSHELF_PODCAST=Readeck` selects the show within it. The first upload
