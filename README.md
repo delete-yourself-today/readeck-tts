@@ -1,7 +1,7 @@
 # Readeck TTS
 
-Poll Readeck for articles labeled `tts`, generate narration through a configured
-Kokoro HTTP endpoint, and upload saved audio as episodes of a `Readeck` podcast
+Poll Readeck for articles labeled `tts`, generate narration through Kokoro,
+ElevenLabs, or Gemini, and upload saved audio as episodes of a `Readeck` podcast
 inside the existing Audiobookshelf `Podcasts` library.
 
 ## Configuration
@@ -22,19 +22,26 @@ Required settings:
 | `READECK_API_TOKEN` | Token with access to bookmarks and extracted articles |
 | `AUDIOBOOKSHELF_URL` | Audiobookshelf base URL, without `/api` |
 | `AUDIOBOOKSHELF_API_TOKEN` | Token with library access and upload permission |
-| `KOKORO_BASE_URL` | Kokoro API URL including `/v1`, reachable from the worker |
 
 Optional settings:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `TTS_PROVIDER` | `kokoro` | `kokoro`, `elevenlabs`, or `gemini` |
 | `READECK_TAG` | `tts` | Label that selects articles |
 | `AUDIOBOOKSHELF_LIBRARY` | `Podcasts` | Existing podcast library name |
 | `AUDIOBOOKSHELF_PODCAST` | `Readeck` | Show name and directory within that library |
 | `AUDIOBOOKSHELF_FOLDER_ID` | Auto-select | Required only when the library has multiple folders |
 | `KOKORO_API_KEY` | None | Optional bearer token for Kokoro |
+| `KOKORO_BASE_URL` | None | Required when using Kokoro; endpoint including `/v1` |
 | `KOKORO_VOICE` | `af_heart` | Voice or comma-separated list randomly selected per new job |
 | `KOKORO_MODEL` | `kokoro` | Model name understood by the endpoint |
+| `ELEVENLABS_API_KEY` | None | Required when using ElevenLabs |
+| `ELEVENLABS_MODEL` | `eleven_v4_turbo` | `eleven_v4` or `eleven_v4_turbo` |
+| `ELEVENLABS_VOICE` | `JBFqnCBsd6RMkjVDRZzb` | George's voice ID, or a comma-separated pool of voice IDs |
+| `GEMINI_API_KEY` | None | Required when using Gemini |
+| `GEMINI_MODEL` | `gemini-3.8-flash-lite-tts` | `gemini-3.8-flash-tts` or `gemini-3.8-flash-lite-tts` |
+| `GEMINI_VOICE` | `Charon` | Voice name/ID, or a comma-separated pool |
 | `POLL_INTERVAL_SECONDS` | `300` | Time between discovery polls |
 | `RETRY_INTERVAL_SECONDS` | `30` | Service retry delay, indexing checks, and initial article retry delay |
 | `TTS_TIMEOUT_SECONDS` | `1800` | Socket read timeout while waiting for audio; not an overall job deadline |
@@ -48,6 +55,34 @@ The podcast name must be a simple folder name of at most 60 characters.
 Repeated whitespace in the podcast name is collapsed to match Audiobookshelf's
 directory naming.
 
+Only the selected provider's credentials are required for new jobs. Kokoro keeps
+its existing configuration and remains the default. Hosted models are explicitly
+limited to the families listed above; Gemini Pro and older ElevenLabs models are
+not supported by the worker.
+
+For ElevenLabs v4 Turbo:
+
+```dotenv
+TTS_PROVIDER=elevenlabs
+ELEVENLABS_API_KEY=your-key
+ELEVENLABS_MODEL=eleven_v4_turbo
+ELEVENLABS_VOICE=JBFqnCBsd6RMkjVDRZzb
+```
+
+For Gemini 3.8 Flash-Lite:
+
+```dotenv
+TTS_PROVIDER=gemini
+GEMINI_API_KEY=your-key
+GEMINI_MODEL=gemini-3.8-flash-lite-tts
+GEMINI_VOICE=Sulafat
+```
+
+Both hosted providers require `ffmpeg` for assembling one final MP3; it is
+included in the Docker image. Install it separately for native development.
+Startup checks validate the selected model, credentials, and every configured
+voice using read-only API calls. They do not generate paid speech.
+
 The container stores state and temporary audio in `/data`. Choose its host
 storage through the volume mapping; the Compose template uses a named volume.
 For native development only, `DATA_DIR` can override the default `./data` path.
@@ -56,13 +91,15 @@ The layout stays opinionated: one show, one episode per article, MP3 output,
 sequential generation, immediate polling at startup, and audio cleanup after
 confirmed delivery. Naming, credentials, and timing are configurable; there are
 no alternate library layouts or backend-specific deployment requirements.
-Text, voice, and destination are frozen when a job is first snapshotted, so
-configuration changes do not silently alter an in-progress delivery.
+Text, provider, model, voice, delivery settings, and destination are frozen when
+a job is first snapshotted, so configuration changes do not silently alter an
+in-progress delivery.
 
 ## Run with Docker Compose
 
 Copy [compose.yaml](compose.yaml) into your deployment directory and edit its
-three required URLs and two API tokens. Optional environment variables are
+Readeck/Audiobookshelf URLs and API tokens, then configure a speech provider.
+Optional environment variables are
 commented out with their default values. The template uses the published image
 at `ghcr.io/delete-yourself-today/readeck-tts:latest` and a persistent named volume.
 
@@ -73,8 +110,9 @@ docker compose up -d
 docker compose logs -f
 ```
 
-The worker needs outbound access to Readeck, Kokoro, and Audiobookshelf. It exposes
-no ports. The Kokoro hostname must resolve and be reachable from the container.
+The worker needs outbound access to Readeck, Audiobookshelf, and the selected
+speech provider. It exposes no ports. When using Kokoro, its hostname must resolve
+and be reachable from the container.
 The Kokoro server stays separate and does not need to mount this volume.
 
 ### Published image
@@ -99,13 +137,15 @@ creates its directory; Audiobookshelf's scanner creates the show and episodes.
 An empty `AUDIOBOOKSHELF_FOLDER_ID` automatically selects the sole library
 folder. If there are multiple folders, set the ID explicitly.
 
-The default voice is `af_heart`; set `KOKORO_VOICE` to change it for future jobs.
+Kokoro's default voice is `af_heart`; set `KOKORO_VOICE` to change it for future jobs.
 For variety, use a comma-separated list such as `KOKORO_VOICE=af_heart,af_bella`.
 Each new article picks one voice with equal probability; consecutive repeats are
 allowed. Whitespace around names is trimmed, duplicate names count once, and
 empty entries are rejected. Every listed voice must be available at the endpoint.
 The chosen voice is saved in the job snapshot and reused across retries and
-restarts, even if the configured list changes.
+restarts, even if the configured list changes. The same random selection applies
+to `ELEVENLABS_VOICE` and `GEMINI_VOICE`, using their provider-specific IDs/names.
+One voice narrates the whole article, including every chunk.
 
 New jobs preserve headings (including their levels), paragraphs, list items,
 and quotations from Readeck's article HTML. Narration adds explicit pauses:
@@ -123,9 +163,24 @@ pause budget. Structured blocks, plain text, and the rendered speech input are
 saved in the job snapshot; retries reuse that exact input. Existing snapshots
 continue using their original input, and completed articles are not regenerated.
 
+ElevenLabs v4 and v4 Turbo share one HTTP API and the same rendering: a restrained
+narration cue plus `[short pause]` at block boundaries, with Stability `0.5` and
+Similarity `0.75`. Gemini 3.8 uses the Interactions API with style metadata and
+`<short pause>` tags. These qualitative pauses are interpreted by the model;
+they do not promise the exact durations used by Kokoro. Playback speed stays
+unchanged and no pronunciation overrides are applied.
+
+Hosted articles are split at paragraph/sentence boundaries into requests of at
+most 4,000 rendered characters, splitting exceptionally long sentences at words.
+Each request's native audio and usage receipt are saved in a `chunks` directory
+before assembly. An interrupted or failed generation reuses valid completed
+chunks; a failed MP3 assembly does not regenerate them. A request interrupted
+before its audio is durably saved may still have been billed and will need to
+run again. There are no hidden automatic HTTP retries or provider fallbacks.
+
 `KOKORO_BASE_URL` includes `/v1`. `KOKORO_API_KEY` is optional. The Readeck and
-Audiobookshelf base URLs should not include `/api`. No hosted OpenAI calls are
-made. Only the Kokoro-compatible HTTP speech endpoint is used.
+Audiobookshelf base URLs should not include `/api`. The worker does not use
+OpenAI; the standalone Realtime comparison script below is separate.
 
 The service polls immediately on launch, then every 300 seconds by default.
 With no saved checkpoint it discovers all existing bookmarks. Eligibility is
@@ -148,13 +203,21 @@ prevents two workers from using the same data directory concurrently. Completed
 jobs stay completed when articles or voice configuration change. Regeneration is
 not automatic.
 
-Each job snapshots its text, metadata, model, voice, and destination before
-generation. Audio is validated, tagged, fsynced, and renamed into place before
+Each job snapshots its text, metadata, provider, model, voice, delivery options,
+rendered requests, and destination before generation. Audio is validated,
+tagged, fsynced, and renamed into place before
 upload. Failed uploads reuse that audio. A crash between rename and the SQLite
 update also recovers it. Interrupted local generation retries automatically;
-Kokoro-FastAPI handles text chunking internally, and an interrupted request may
-repeat the whole article. This implementation is intended for a self-hosted
-Kokoro backend, without per-request provider charges.
+Kokoro-FastAPI handles text chunking internally, and an interrupted Kokoro request
+may repeat the whole article. Hosted providers resume from their completed native
+audio chunks. Once delivery is confirmed, final audio, native chunks, and chunk
+usage receipts are removed together; the ledger keeps the job snapshot.
+
+Changing `TTS_PROVIDER` affects new jobs. Unfinished jobs continue with the
+provider recorded in their snapshot, so retain that provider's credentials (and
+`KOKORO_BASE_URL` for old Kokoro jobs) until their audio has been generated.
+Snapshots created before provider selection was introduced are treated as
+Kokoro jobs. Fully generated audio can be delivered without regenerating it.
 
 Each episode uses the deterministic filename `rdtts-<job-key>.mp3` in the
 configured show directory. Article titles, save dates, authors, and source URLs
@@ -181,18 +244,19 @@ HTTP requests. Shutdown interrupts the request and unwinds its file/socket
 contexts, closes the worker's HTTP sessions and database, and releases the data
 directory lock. It exits cleanly without charging an article retry attempt.
 Partial generation files are discarded; an interrupted generation resumes
-from its saved input on restart. Completed local audio is preserved until
-delivery is confirmed, and interrupted uploads reconcile against Audiobookshelf
-before retrying. Disconnecting from Kokoro does not guarantee its server-side
-computation is cancelled.
+from its saved input and completed hosted chunks on restart. Completed local
+audio is preserved until delivery is confirmed, and interrupted uploads reconcile against Audiobookshelf
+before retrying. Disconnecting does not guarantee that a provider's server-side
+computation or billing is cancelled.
 
 ### Credentials and destination validation
 
 `run` and `once` perform the same read-only preflight as `check` before
 discovering or generating anything: Readeck authentication, Audiobookshelf
-authentication/upload permission, destination library/folder, and Kokoro voice
-availability. `run` repeats these checks on every poll, so deleted libraries or
-revoked access are not hidden by a permanently cached destination ID.
+authentication/upload permission, destination library/folder, and selected speech
+provider model/voice availability. `run` repeats these checks on every poll, so
+deleted libraries or revoked access are not hidden by a permanently cached
+destination ID.
 
 Missing required environment variables, HTTP 401/403 (except optional scan
 permission), missing/inaccessible or ambiguous libraries, wrong library type,
@@ -288,6 +352,83 @@ with a title, source description, and date. Read-only reconciliation recorded
 its item/episode IDs in the local ledger. The worker is not running continuously.
 The Dockerfile and Compose configuration have not yet been built or run; this
 live test used the native Python environment.
+
+## Standalone OpenAI Realtime comparison
+
+The optional comparison script generates local samples from an excerpt JSON
+containing a `blocks` array (`type`, `text`, and optional heading `level`). It does
+not discover jobs, change the ledger, or upload episodes. The production worker
+continues to use Kokoro.
+
+```bash
+.venv/bin/pip install -e '.[comparison]'
+# Add OPENAI_API_KEY to .env; the comparison script loads it locally.
+.venv/bin/python scripts/compare_realtime.py path/to/excerpt.json \
+  --model gpt-realtime-2.1 --voice cedar --output data/comparisons/sample
+```
+
+Each invocation sends the excerpt to OpenAI and incurs API usage. The default
+model is `gpt-realtime-2.1`, with Cedar at normal playback speed. The prompt asks
+for faithful, restrained literary narration, using block types as silent delivery
+cues. The sample directory contains `audio.wav` (24 kHz mono PCM16), the exact
+request, the model's returned transcript, and a summary with completion status,
+duration, and reported token usage. The transcript is model-reported, not an
+independent transcription or guarantee of verbatim audio. Failed generations
+retain their diagnostic summary and any partial audio. Existing audio is never
+overwritten; choose a new directory to generate another take.
+
+## Standalone ElevenLabs comparison
+
+Add `ELEVENLABS_API_KEY` to `.env`, then generate the same excerpt with
+Multilingual v2 and the default George storytelling voice:
+
+```bash
+.venv/bin/python scripts/compare_elevenlabs.py path/to/excerpt.json \
+  --output data/comparisons/elevenlabs-sample
+```
+
+Use `--voice-id` to select another available voice. The script uses the same
+structural pause timings as Kokoro, rendered as ElevenLabs break tags for
+Multilingual v2. Speed remains `1.0`; the remaining voice settings use the
+documented defaults. To compare Eleven v4 using the same voice:
+
+```bash
+.venv/bin/python scripts/compare_elevenlabs.py path/to/excerpt.json \
+  --model eleven_v4 --output data/comparisons/elevenlabs-v4-sample
+```
+
+The v4 renderer uses a thoughtful narration cue and qualitative `[short pause]`
+tags at block boundaries. It sends only Stability and Similarity settings;
+v4 does not support the v2 SSML, Style, or Speed controls. Neither version applies
+pronunciation overrides or rewrites the article. Use `--model eleven_v4_turbo`
+to compare the Turbo variant with the same text rendering and voice settings. The script
+makes one generation request with no automatic retries and saves `audio.mp3`,
+the exact request, and a summary containing duration and any returned credit
+cost and request identifiers. Existing or partial audio is never overwritten.
+This uses ElevenLabs account credits and does not upload to Audiobookshelf or
+modify worker jobs.
+
+## Standalone Gemini comparison
+
+Add `GEMINI_API_KEY` from Google AI Studio to `.env`. Generate a sample with:
+
+```bash
+.venv/bin/python scripts/compare_gemini.py path/to/excerpt.json \
+  --model gemini-3.8-flash-tts --voice Charon --output data/comparisons/gemini-sample
+```
+
+The supported models are `gemini-3.8-flash-tts`, `gemini-3.8-flash-lite-tts`,
+and `gemini-2.5-pro-preview-tts`. The 3.8 models use the Interactions API with
+delivery style in separate metadata and inline `<short pause>` tags. Pro uses
+`generateContent` with an instruction prompt and the original paragraph layout.
+All versions preserve the source wording and leave playback speed unchanged.
+
+The script sends one generation request with no automatic retries and saves
+`audio.wav`, the exact request, response metadata without base64 audio, and a
+summary with duration and token usage. It accepts both complete WAV and raw
+PCM16 responses and checks completion status before accepting a sample. Existing
+or partial audio is never overwritten. No worker jobs or podcast episodes are
+created. Each generation uses the Gemini API key's project quota and billing.
 
 ## Optional Kokoro server setup
 

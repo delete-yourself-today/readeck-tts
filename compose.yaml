@@ -8,7 +8,9 @@ services:
       READECK_API_TOKEN: ""
       AUDIOBOOKSHELF_URL: "https://audiobookshelf.example.com"
       AUDIOBOOKSHELF_API_TOKEN: ""
-      # Required: Kokoro API URL, including /v1, reachable from this container.
+      # Choose kokoro, elevenlabs, or gemini. Kokoro remains the default.
+      # TTS_PROVIDER: "kokoro"
+      # Required only for Kokoro: API URL, including /v1.
       KOKORO_BASE_URL: "http://kokoro:8880/v1"
 
       # Optional: uncomment to override the application defaults.
@@ -20,6 +22,14 @@ services:
       # KOKORO_API_KEY: ""
       # KOKORO_MODEL: "kokoro"
       # KOKORO_VOICE: "af_heart"
+      # Required for ElevenLabs; optional model and voice defaults shown.
+      # ELEVENLABS_API_KEY: ""
+      # ELEVENLABS_MODEL: "eleven_v4_turbo"
+      # ELEVENLABS_VOICE: "JBFqnCBsd6RMkjVDRZzb"
+      # Required for Gemini; optional model and voice defaults shown.
+      # GEMINI_API_KEY: ""
+      # GEMINI_MODEL: "gemini-3.8-flash-lite-tts"
+      # GEMINI_VOICE: "Charon"
       # POLL_INTERVAL_SECONDS: "300"
       # RETRY_INTERVAL_SECONDS: "30"
       # TTS_TIMEOUT_SECONDS: "1800"

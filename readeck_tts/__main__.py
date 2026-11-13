@@ -1,5 +1,5 @@
 import argparse
-from contextlib import closing
+from contextlib import closing, ExitStack
 import json
 import logging
 import os
@@ -9,10 +9,11 @@ import time
 from dotenv import load_dotenv
 
 from .cache import cleanup_completed
-from .clients import Audiobookshelf, ConfigurationError, Kokoro, Readeck, RemoteError, check_services
+from .clients import Audiobookshelf, ConfigurationError, Readeck, RemoteError, check_services
 from .config import Config, log_level_from_env
 from .state import State, data_lock
 from .shutdown import shutdown_signals
+from .speech import speech_client
 from .worker import Worker
 
 
@@ -61,8 +62,13 @@ def main():
             return
         config = Config.from_env()
         if args.command == "check":
-            readeck, kokoro, abs_client = Readeck(config), Kokoro(config), Audiobookshelf(config)
-            print(json.dumps(check_services(config, readeck, kokoro, abs_client), indent=2))
+            with ExitStack() as stack:
+                clients = []
+                for factory in (Readeck, speech_client, Audiobookshelf):
+                    client = factory(config)
+                    stack.enter_context(closing(client.session))
+                    clients.append(client)
+                print(json.dumps(check_services(config, *clients), indent=2))
             return
         with data_lock(config.data_dir), closing(Worker(config)) as worker:
             if args.command == "reconcile":
@@ -78,7 +84,7 @@ def main():
                 print(json.dumps({"key": job["key"], "found": bool(found)}))
                 return
             if args.command == "once":
-                check_services(config, worker.readeck, worker.kokoro, worker.abs)
+                check_services(config, worker.readeck, worker.tts, worker.abs)
                 worker.discover()
                 worker.work(limit=args.max_jobs)
                 return
@@ -87,7 +93,7 @@ def main():
             while True:
                 try:
                     if time.monotonic() >= next_poll:
-                        check_services(config, worker.readeck, worker.kokoro, worker.abs)
+                        check_services(config, worker.readeck, worker.tts, worker.abs)
                         worker.discover()
                         ready = True
                         next_poll = time.monotonic() + config.poll_interval

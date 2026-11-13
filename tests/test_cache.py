@@ -9,6 +9,25 @@ from readeck_tts.state import State
 
 
 class CacheTests(unittest.TestCase):
+    def test_only_completed_jobs_lose_native_chunks_and_usage_receipts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(Path(directory))
+            self.addCleanup(state.db.close)
+            state.discover("source", [{"id": "a", "time": "2026-11-12T12:00:00Z"},
+                                      {"id": "b", "time": "2026-11-12T12:01:00Z"}])
+            jobs = state.due("source", 1)
+            for job in jobs:
+                chunks = Path(directory) / "articles" / job["key"] / "chunks"
+                chunks.mkdir(parents=True)
+                for name in ("000000.mp3", "000000.json", "000001.wav", "000002.wav.part", "concat.txt", "unrelated.txt"):
+                    (chunks / name).write_text("cached")
+            state.update(jobs[0]["key"], state="complete", cleanup_pending=1)
+            cleanup_completed(state)
+            completed = Path(directory) / "articles" / jobs[0]["key"] / "chunks"
+            pending = Path(directory) / "articles" / jobs[1]["key"] / "chunks"
+            self.assertEqual([path.name for path in completed.iterdir()], ["unrelated.txt"])
+            self.assertTrue((pending / "000000.mp3").exists())
+
     def test_upgrade_cleans_legacy_completed_audio_but_preserves_unfinished_audio(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

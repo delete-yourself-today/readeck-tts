@@ -77,6 +77,9 @@ class FakeABS:
 
 class RecoveryTests(unittest.TestCase):
     def setUp(self):
+        network = patch("requests.sessions.Session.request", side_effect=AssertionError("Unexpected remote call in recovery unit test"))
+        network.start()
+        self.addCleanup(network.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.config = Config("http://readeck", "secret", "http://abs", "secret",
@@ -160,12 +163,50 @@ class RecoveryTests(unittest.TestCase):
         snapshot = self.worker.snapshot(self.job())
         snapshot.pop("blocks")
         snapshot.pop("speech_input")
+        snapshot.pop("provider")
         self.state.update(self.key, snapshot=json.dumps(snapshot))
         self.readeck.article = Mock(side_effect=AssertionError("Must reuse the saved snapshot"))
         self.kokoro.generate = Mock(wraps=self.kokoro.generate)
         self.worker.work()
         self.assertEqual(self.kokoro.generate.call_args.args[0], snapshot)
         self.assertEqual(self.job()["state"], "awaiting_index")
+
+    def test_provider_switch_resumes_saved_job_with_original_provider(self):
+        config = replace(self.config, provider="elevenlabs", model="eleven_v4_turbo",
+                         voice="voice-one", elevenlabs_token="secret")
+        self.worker = Worker(config, self.state, self.readeck, self.kokoro, self.abs)
+        self.kokoro.fail = True
+        with self.assertRaises(RemoteError):
+            self.worker.work()
+        saved = json.loads(self.job()["snapshot"])
+        self.assertEqual(saved["provider"], "elevenlabs")
+        self.assertTrue(saved["speech_chunks"])
+        new_config = replace(self.config, provider="gemini", model="gemini-3.8-flash-lite-tts",
+                             voice="Sulafat", gemini_token="secret", elevenlabs_token="secret")
+        current = FakeKokoro()
+        self.kokoro.fail = False
+        self.kokoro.session = Mock()
+        self.worker = Worker(new_config, self.state, self.readeck, current, self.abs)
+        self.addCleanup(self.worker.close)
+        with patch("readeck_tts.worker.speech_client", return_value=self.kokoro) as factory:
+            self.retry_now()
+        factory.assert_called_once_with(new_config, "elevenlabs")
+        self.assertEqual(current.calls, 0)
+        self.assertEqual(json.loads(self.job()["snapshot"]), saved)
+
+    def test_cached_audio_survives_provider_switch_without_old_credentials(self):
+        self.abs.fail = True
+        with self.assertRaises(RemoteError):
+            self.worker.work()
+        self.abs.fail = False
+        new_config = replace(self.config, provider="gemini", model="gemini-3.8-flash-lite-tts",
+                             voice="Charon", gemini_token="secret")
+        new_tts = FakeKokoro()
+        self.worker = Worker(new_config, self.state, self.readeck, new_tts, self.abs)
+        with patch("readeck_tts.worker.speech_client", side_effect=AssertionError("No old credentials needed")):
+            self.retry_now()
+        self.assertEqual(new_tts.calls, 0)
+        self.assertEqual(self.kokoro.calls, 1)
 
     def test_each_new_article_selects_a_voice(self):
         self.worker.config = replace(self.config, voice="af_heart,af_bella")

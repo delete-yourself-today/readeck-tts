@@ -1,6 +1,7 @@
 import errno
 import logging
 import os
+import re
 
 
 log = logging.getLogger(__name__)
@@ -14,6 +15,16 @@ def cleanup_completed(state):
         try:
             for filename in ("audio.mp3", "audio.mp3.part"):
                 (directory / filename).unlink(missing_ok=True)
+            chunks = directory / "chunks"
+            if chunks.is_dir():
+                for path in chunks.iterdir():
+                    if path.name == "concat.txt" or re.fullmatch(r"\d{6}\.(?:mp3|wav|json)(?:\.part)?", path.name):
+                        path.unlink(missing_ok=True)
+                try:
+                    chunks.rmdir()
+                except OSError as error:
+                    if error.errno not in {errno.ENOENT, errno.ENOTEMPTY}:
+                        raise
             if directory.exists():
                 descriptor = os.open(directory, os.O_RDONLY)
                 try:

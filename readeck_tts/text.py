@@ -65,7 +65,7 @@ def article_text(html):
     return "\n\n".join(block["text"] for block in article_blocks(html))
 
 
-def kokoro_input(blocks):
+def narration_input(blocks, pause_template):
     """Render block boundaries as explicit pauses, with no leading/trailing silence."""
     before = {"heading": 0.8, "blockquote": 0.6}
     after = {"title": 1.0, "heading": 0.6, "blockquote": 0.6, "list_item": 0.3}
@@ -78,6 +78,10 @@ def kokoro_input(blocks):
     for index, block in enumerate(blocks):
         if index:
             duration = f"{pauses[index - 1] * scale:.3f}".rstrip("0").rstrip(".")
-            parts.append(f"[pause:{duration}s]")
+            parts.append(pause_template.format(duration=duration))
         parts.append(block["text"])
     return "\n\n".join(parts)
+
+
+def kokoro_input(blocks):
+    return narration_input(blocks, "[pause:{duration}s]")

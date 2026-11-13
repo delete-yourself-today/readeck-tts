@@ -9,6 +9,9 @@ description = "Turn labeled Readeck articles into Audiobookshelf narrations"
 requires-python = ">=3.12"
 dependencies = ["requests>=2.32.5,<3", "python-dotenv>=1.1,<2", "mutagen>=1.47,<2"]
 
+[project.optional-dependencies]
+comparison = ["websocket-client>=1.8,<2"]
+
 [project.scripts]
 readeck-tts = "readeck_tts.__main__:main"
 

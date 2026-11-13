@@ -27,19 +27,23 @@ class RemoteError(RuntimeError):
             raise ConfigurationError(f"{self.service}: access denied (HTTP 403); check token permissions and access to the requested resource") from None
 
 
-def check_services(config, readeck, kokoro, abs_client):
+def check_services(config, readeck, tts, abs_client):
     """Read-only preflight shared by check, startup, and periodic revalidation."""
     readeck.json("GET", "/profile")
     user = abs_client.json("GET", "/me")
     if not user.get("permissions", {}).get("upload"):
         raise ConfigurationError("Audiobookshelf: the token's user needs upload permission")
     destination = abs_client.resolve()
-    voices = kokoro.json("GET", "/audio/voices")["voices"]
-    names = [v if isinstance(v, str) else v["id"] for v in voices]
-    for voice in config.voices:
-        if voice not in names:
-            raise ConfigurationError(f"Kokoro voice {voice!r} is unavailable; set KOKORO_VOICE")
-    return {"readeck": "ok", "audiobookshelf": destination, "kokoro": "ok", "voice": config.voice}
+    if config.provider == "kokoro":
+        voices = tts.json("GET", "/audio/voices")["voices"]
+        names = [v if isinstance(v, str) else v["id"] for v in voices]
+        for voice in config.voices:
+            if voice not in names:
+                raise ConfigurationError(f"Kokoro voice {voice!r} is unavailable; set KOKORO_VOICE")
+    else:
+        tts.check(config.model, config.voices)
+    return {"readeck": "ok", "audiobookshelf": destination, config.provider: "ok",
+            "voice": config.voice, "model": config.model}
 
 
 class API:

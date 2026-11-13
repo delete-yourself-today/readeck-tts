@@ -206,6 +206,22 @@ class ConfigurationTests(unittest.TestCase):
             main()
             self.assertEqual(json.loads(output.getvalue()), [])
 
+    def test_check_does_not_create_state_or_acquire_a_worker_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory) / "unused"
+            config = replace(self.config, data_dir=data_dir)
+            clients = [Mock(), Mock(), Mock()]
+            with patch("readeck_tts.__main__.Config.from_env", return_value=config), \
+                    patch("readeck_tts.__main__.Readeck", return_value=clients[0]), \
+                    patch("readeck_tts.__main__.speech_client", return_value=clients[1]), \
+                    patch("readeck_tts.__main__.Audiobookshelf", return_value=clients[2]), \
+                    patch("readeck_tts.__main__.check_services", return_value={"kokoro": "ok"}), \
+                    patch("sys.argv", ["readeck-tts", "check"]), patch("builtins.print"):
+                main()
+            self.assertFalse(data_dir.exists())
+            for client in clients:
+                client.session.close.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

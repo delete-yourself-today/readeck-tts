@@ -9,9 +9,10 @@ from mutagen.mp3 import MP3
 from mutagen.id3 import COMM, TALB, TCON, TDRC, TIT2, TPE1, TXXX
 
 from .cache import cleanup_completed
-from .clients import Audiobookshelf, ConfigurationError, Kokoro, Readeck, RemoteError
+from .clients import Audiobookshelf, ConfigurationError, Readeck, RemoteError
+from .narration import speech_snapshot
+from .speech import speech_client
 from .state import State
-from .text import kokoro_input
 
 
 log = logging.getLogger(__name__)
@@ -36,17 +37,24 @@ def safe_component(value):
 
 
 class Worker:
-    def __init__(self, config, state=None, readeck=None, kokoro=None, abs_client=None):
+    def __init__(self, config, state=None, readeck=None, tts=None, abs_client=None):
         self.config = config
         self._owns_state = state is None
         self.state = state or State(config.data_dir)
-        self.readeck = readeck or Readeck(config)
-        self.kokoro = kokoro or Kokoro(config)
-        self.abs = abs_client or Audiobookshelf(config)
-        self._owned_clients = [client for supplied, client in (
-            (readeck, self.readeck), (kokoro, self.kokoro), (abs_client, self.abs)
-        ) if supplied is None]
+        self._owned_clients = []
+
+        def use_client(supplied, factory):
+            if supplied is not None:
+                return supplied
+            client = factory(config)
+            self._owned_clients.append(client)
+            return client
+
         try:
+            self.readeck = use_client(readeck, Readeck)
+            self.tts = use_client(tts, speech_client)
+            self._speech_clients = {config.provider: self.tts}
+            self.abs = use_client(abs_client, Audiobookshelf)
             cleanup_completed(self.state)
         except BaseException:
             self.close()
@@ -94,7 +102,7 @@ class Worker:
         author = ", ".join(bookmark.get("authors") or []) or bookmark.get("site_name") or "Readeck"
         snapshot = {
             "text": "\n\n".join(block["text"] for block in blocks), "title": title,
-            "blocks": blocks, "speech_input": kokoro_input(blocks),
+            "blocks": blocks, **speech_snapshot(blocks, self.config.provider),
             "author": safe_component(author), "url": bookmark.get("url", ""),
             "article_id": job["article_id"], "voice": random.choice(self.config.voices), "model": self.config.model,
             "created": bookmark.get("created", ""),
@@ -110,9 +118,14 @@ class Worker:
         part = audio.with_suffix(".mp3.part")
         self.state.update(job["key"], state="generating")
         try:
-            self.kokoro.generate(snapshot, part)
+            provider = snapshot.get("provider", "kokoro")
+            if provider not in self._speech_clients:
+                client = speech_client(self.config, provider)
+                self._speech_clients[provider] = client
+                self._owned_clients.append(client)
+            self._speech_clients[provider].generate(snapshot, part)
             if not valid_audio(part):
-                raise RuntimeError("Kokoro returned invalid or empty MP3 audio")
+                raise RuntimeError("Speech provider returned invalid or empty MP3 audio")
             tagged = MP3(part)
             if tagged.tags is None:
                 tagged.add_tags()
