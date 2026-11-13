@@ -153,6 +153,16 @@ checks pass again, without charging individual jobs' retry counters. Changing
 an existing job's destination configuration stops processing rather than
 silently delivering it somewhere else.
 
+`SIGTERM` and `SIGINT` stop the worker promptly, including during synchronous
+HTTP requests. Shutdown interrupts the request and unwinds its file/socket
+contexts, closes the worker's HTTP sessions and database, and releases the data
+directory lock. It exits cleanly without charging an article retry attempt.
+Partial generation files are discarded; an interrupted generation resumes
+from its saved input on restart. Completed local audio is preserved until
+delivery is confirmed, and interrupted uploads reconcile against Audiobookshelf
+before retrying. Disconnecting from Kokoro does not guarantee its server-side
+computation is cancelled.
+
 ### Credentials and destination validation
 
 `run` and `once` perform the same read-only preflight as `check` before

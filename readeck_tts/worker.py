@@ -36,11 +36,27 @@ def safe_component(value):
 class Worker:
     def __init__(self, config, state=None, readeck=None, kokoro=None, abs_client=None):
         self.config = config
+        self._owns_state = state is None
         self.state = state or State(config.data_dir)
         self.readeck = readeck or Readeck(config)
         self.kokoro = kokoro or Kokoro(config)
         self.abs = abs_client or Audiobookshelf(config)
-        cleanup_completed(self.state)
+        self._owned_clients = [client for supplied, client in (
+            (readeck, self.readeck), (kokoro, self.kokoro), (abs_client, self.abs)
+        ) if supplied is None]
+        try:
+            cleanup_completed(self.state)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        try:
+            for client in self._owned_clients:
+                client.session.close()
+        finally:
+            if self._owns_state:
+                self.state.db.close()
 
     def discover(self):
         events = self.readeck.sync(self.state.cursor(self.config.readeck_url))

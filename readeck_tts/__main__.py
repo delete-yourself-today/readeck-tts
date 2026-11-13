@@ -1,10 +1,9 @@
 import argparse
+from contextlib import closing
 import json
 import logging
 import os
 from pathlib import Path
-import signal
-import threading
 import time
 
 from dotenv import load_dotenv
@@ -13,9 +12,11 @@ from .cache import cleanup_completed
 from .clients import Audiobookshelf, ConfigurationError, Kokoro, Readeck, RemoteError, check_services
 from .config import Config, log_level_from_env
 from .state import State, data_lock
+from .shutdown import shutdown_signals
 from .worker import Worker
 
 
+@shutdown_signals()
 def main():
     parser = argparse.ArgumentParser(description="Narrate labeled Readeck articles into Audiobookshelf")
     parser.add_argument("command", nargs="?", choices=["run", "once", "check", "status", "retry", "reconcile", "cleanup"], default="run")
@@ -63,8 +64,7 @@ def main():
             readeck, kokoro, abs_client = Readeck(config), Kokoro(config), Audiobookshelf(config)
             print(json.dumps(check_services(config, readeck, kokoro, abs_client), indent=2))
             return
-        with data_lock(config.data_dir):
-            worker = Worker(config)
+        with data_lock(config.data_dir), closing(Worker(config)) as worker:
             if args.command == "reconcile":
                 job = worker.state.get(args.key)
                 if not job or not job["snapshot"]:
@@ -82,12 +82,9 @@ def main():
                 worker.discover()
                 worker.work(limit=args.max_jobs)
                 return
-            stop = threading.Event()
-            for signum in (signal.SIGTERM, signal.SIGINT):
-                signal.signal(signum, lambda *_: stop.set())
             next_poll = 0
             ready = False
-            while not stop.is_set():
+            while True:
                 try:
                     if time.monotonic() >= next_poll:
                         check_services(config, worker.readeck, worker.kokoro, worker.abs)
@@ -107,7 +104,7 @@ def main():
                     ready = False
                     log.warning("Discovery or destination unavailable: %s", error)
                     next_poll = time.monotonic() + config.retry_interval
-                stop.wait(1)
+                time.sleep(1)
     except RemoteError as error:
         try:
             error.check_credentials()

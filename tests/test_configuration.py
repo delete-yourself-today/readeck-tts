@@ -161,7 +161,6 @@ class ConfigurationTests(unittest.TestCase):
             with patch("readeck_tts.__main__.Config.from_env", return_value=config), \
                     patch("readeck_tts.__main__.Worker", return_value=worker), \
                     patch("readeck_tts.__main__.check_services", side_effect=ConfigurationError("missing library")), \
-                    patch("readeck_tts.__main__.signal.signal"), \
                     patch("sys.argv", ["readeck-tts", "run"]), \
                     contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as caught:
