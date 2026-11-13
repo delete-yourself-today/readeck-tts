@@ -1,4 +1,5 @@
 import contextlib
+from dataclasses import replace
 import io
 import json
 import os
@@ -73,6 +74,20 @@ class ConfigurationTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, name):
                         Config.from_env()
 
+    def test_voice_list_trims_names_and_removes_duplicates(self):
+        environment = self.required_environment() | {"KOKORO_VOICE": " af_heart, af_bella ,af_heart "}
+        with patch.dict(os.environ, environment, clear=True):
+            config = Config.from_env()
+        self.assertEqual(config.voices, ("af_heart", "af_bella"))
+        self.assertEqual(self.config.voices, ("af_heart",))
+
+    def test_voice_list_rejects_empty_entries(self):
+        for value in (",", "af_heart,", ",af_heart", "af_heart, ,af_bella"):
+            with self.subTest(value=value), \
+                    patch.dict(os.environ, self.required_environment() | {"KOKORO_VOICE": value}, clear=True):
+                with self.assertRaisesRegex(ValueError, "KOKORO_VOICE"):
+                    Config.from_env()
+
     def test_bad_base_urls_identify_the_setting_without_echoing_secrets(self):
         for value in ("file:///tmp/api", "https://user:secret@example.com", "http://speech:bad/v1",
                       "http://speech/v1?token=secret", "http://speech/v1#fragment", "http://bad host/v1"):
@@ -144,6 +159,18 @@ class ConfigurationTests(unittest.TestCase):
         kokoro.json.return_value = {"voices": ["af_bella"]}
         with self.assertRaisesRegex(ConfigurationError, "KOKORO_VOICE"):
             check_services(self.config, readeck, kokoro, abs_client)
+
+    def test_preflight_checks_every_configured_voice(self):
+        config = replace(self.config, voice="af_heart,af_bella")
+        readeck, kokoro, abs_client = Mock(), Mock(), Mock()
+        abs_client.json.return_value = {"permissions": {"upload": True}}
+        for voices in (["af_heart", "af_bella"], [{"id": "af_heart"}, {"id": "af_bella"}]):
+            with self.subTest(voices=voices):
+                kokoro.json.return_value = {"voices": voices}
+                self.assertEqual(check_services(config, readeck, kokoro, abs_client)["kokoro"], "ok")
+        kokoro.json.return_value = {"voices": ["af_heart"]}
+        with self.assertRaisesRegex(ConfigurationError, "af_bella.*KOKORO_VOICE"):
+            check_services(config, readeck, kokoro, abs_client)
 
     def test_scan_permission_is_optional_but_expired_token_is_not(self):
         client = Audiobookshelf(self.config)

@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import random
 import re
 import time
 
@@ -92,7 +93,7 @@ class Worker:
         snapshot = {
             "text": title + "\n\n" + text, "title": title,
             "author": safe_component(author), "url": bookmark.get("url", ""),
-            "article_id": job["article_id"], "voice": self.config.voice, "model": self.config.model,
+            "article_id": job["article_id"], "voice": random.choice(self.config.voices), "model": self.config.model,
             "created": bookmark.get("created", ""),
             "destination": self.destination(),
         }

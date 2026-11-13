@@ -33,7 +33,7 @@ Optional settings:
 | `AUDIOBOOKSHELF_PODCAST` | `Readeck` | Show name and directory within that library |
 | `AUDIOBOOKSHELF_FOLDER_ID` | Auto-select | Required only when the library has multiple folders |
 | `KOKORO_API_KEY` | None | Optional bearer token for Kokoro |
-| `KOKORO_VOICE` | `af_heart` | Narration voice for new jobs |
+| `KOKORO_VOICE` | `af_heart` | Voice or comma-separated list randomly selected per new job |
 | `KOKORO_MODEL` | `kokoro` | Model name understood by the endpoint |
 | `POLL_INTERVAL_SECONDS` | `300` | Time between discovery polls |
 | `RETRY_INTERVAL_SECONDS` | `30` | Service retry delay, indexing checks, and initial article retry delay |
@@ -100,6 +100,12 @@ An empty `AUDIOBOOKSHELF_FOLDER_ID` automatically selects the sole library
 folder. If there are multiple folders, set the ID explicitly.
 
 The default voice is `af_heart`; set `KOKORO_VOICE` to change it for future jobs.
+For variety, use a comma-separated list such as `KOKORO_VOICE=af_heart,af_bella`.
+Each new article picks one voice with equal probability; consecutive repeats are
+allowed. Whitespace around names is trimmed, duplicate names count once, and
+empty entries are rejected. Every listed voice must be available at the endpoint.
+The chosen voice is saved in the job snapshot and reused across retries and
+restarts, even if the configured list changes.
 `KOKORO_BASE_URL` includes `/v1`. `KOKORO_API_KEY` is optional. The Readeck and
 Audiobookshelf base URLs should not include `/api`. No hosted OpenAI calls are
 made. Only the Kokoro-compatible HTTP speech endpoint is used.

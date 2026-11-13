@@ -21,6 +21,7 @@ class Config:
     kokoro_url: str = ""
     kokoro_token: str = field(default="", repr=False)
     voice: str = "af_heart"
+    voices: tuple[str, ...] = field(init=False)
     model: str = "kokoro"
     label: str = "tts"
     library: str = "Podcasts"
@@ -30,6 +31,12 @@ class Config:
     poll_interval: int = 300
     retry_interval: int = 30
     tts_timeout: int = 1800
+
+    def __post_init__(self):
+        voices = tuple(dict.fromkeys(voice.strip() for voice in self.voice.split(",")))
+        if not all(voices):
+            raise ValueError("KOKORO_VOICE must contain comma-separated voice names without empty entries")
+        object.__setattr__(self, "voices", voices)
 
     @classmethod
     def from_env(cls):

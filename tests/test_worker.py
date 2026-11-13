@@ -138,6 +138,37 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(self.kokoro.calls, 2)
         self.assertEqual(len(self.abs.uploads), 1)
 
+    def test_each_new_article_selects_a_voice(self):
+        self.worker.config = replace(self.config, voice="af_heart,af_bella")
+        self.state.discover(self.config.readeck_url, [{"id": "b", "time": "2026-11-12T12:01:00Z"}])
+        with patch("readeck_tts.worker.random.choice", side_effect=["af_bella", "af_heart"]) as choose:
+            self.worker.work()
+        self.assertEqual(choose.call_count, 2)
+        for call in choose.call_args_list:
+            self.assertEqual(call.args, (("af_heart", "af_bella"),))
+        snapshots = [json.loads(self.state.get(job_key(self.config.readeck_url, article))["snapshot"])
+                     for article in ("a", "b")]
+        self.assertCountEqual([snapshot["voice"] for snapshot in snapshots], ["af_bella", "af_heart"])
+
+    def test_selected_voice_survives_failed_generation_restart_and_config_change(self):
+        self.worker.config = replace(self.config, voice="af_heart,af_bella")
+        self.kokoro.fail = True
+        with patch("readeck_tts.worker.random.choice", return_value="af_bella") as choose:
+            with self.assertRaises(RemoteError):
+                self.worker.work()
+        choose.assert_called_once()
+        self.assertEqual(json.loads(self.job()["snapshot"])["voice"], "af_bella")
+        self.worker = Worker(replace(self.config, voice="af_heart"), self.state,
+                             self.readeck, self.kokoro, self.abs)
+        generate = self.kokoro.generate
+        self.kokoro.generate = Mock(wraps=generate)
+        self.kokoro.fail = False
+        with patch("readeck_tts.worker.random.choice") as choose:
+            self.retry_now()
+        choose.assert_not_called()
+        self.assertEqual(self.kokoro.generate.call_args.args[0]["voice"], "af_bella")
+        self.assertEqual(self.kokoro.calls, 2)
+
     def test_crash_after_audio_rename_recovers_without_regeneration(self):
         update = self.state.update
 

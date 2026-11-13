@@ -36,8 +36,9 @@ def check_services(config, readeck, kokoro, abs_client):
     destination = abs_client.resolve()
     voices = kokoro.json("GET", "/audio/voices")["voices"]
     names = [v if isinstance(v, str) else v["id"] for v in voices]
-    if config.voice not in names:
-        raise ConfigurationError(f"Kokoro voice {config.voice!r} is unavailable; set KOKORO_VOICE")
+    for voice in config.voices:
+        if voice not in names:
+            raise ConfigurationError(f"Kokoro voice {voice!r} is unavailable; set KOKORO_VOICE")
     return {"readeck": "ok", "audiobookshelf": destination, "kokoro": "ok", "voice": config.voice}
 
 
