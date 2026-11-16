@@ -73,6 +73,53 @@ class Worker:
         self.state.discover(self.config.readeck_url, events)
         log.info("Sync recorded %d changes", len(events))
 
+    def finish_listened(self):
+        """Retry each post-listening action without reopening a delivered job."""
+        jobs = self.state.finish_candidates(
+            self.config.readeck_url, archive=self.config.archive_on_finish,
+            remove_tag=self.config.remove_tag_on_finish, delete_audio=self.config.delete_audio_on_finish)
+        for job in jobs:
+            key = job["key"]
+            try:
+                snapshot = json.loads(job["snapshot"]) if job["snapshot"] else None
+                if not snapshot or snapshot["destination"] != self.destination():
+                    self.state.update(key, finish_error="Destination changed; restore the original configuration to finish cleanup")
+                    continue
+                if not job["listened"]:
+                    if not self.abs.is_finished(job["abs_item_id"], job["abs_episode_id"]):
+                        self.state.update(key, finish_error=None)
+                        continue
+                    # Save evidence before deletion can remove remote progress.
+                    self.state.update(key, listened=1)
+                archive = self.config.archive_on_finish and not job["archived"]
+                remove_tag = self.config.remove_tag_on_finish and not job["tag_removed"]
+                if archive or remove_tag:
+                    try:
+                        self.readeck.finish(job["article_id"], archive=archive,
+                                            remove_tag=snapshot.get("label", self.config.label) if remove_tag else None)
+                    except RemoteError as error:
+                        if error.status != 404:
+                            raise
+                        # A deleted bookmark needs no further Readeck changes.
+                    fields = {}
+                    if archive:
+                        fields["archived"] = 1
+                    if remove_tag:
+                        fields["tag_removed"] = 1
+                    self.state.update(key, **fields)
+                if self.config.delete_audio_on_finish and not job["audio_deleted"]:
+                    self.abs.delete_episode(job["abs_item_id"], job["abs_episode_id"])
+                    self.state.update(key, audio_deleted=1)
+                self.state.update(key, finish_error=None)
+                log.info("Finished post-listening actions for job %s", key)
+            except RemoteError as error:
+                self.state.update(key, finish_error=str(error))
+                error.check_credentials()
+                log.warning("Post-listening actions for job %s will retry next poll: %s", key, error)
+            except Exception as error:
+                self.state.update(key, finish_error=str(error))
+                log.warning("Post-listening actions for job %s will retry next poll: %s", key, error)
+
     def destination(self):
         return {"url": self.config.abs_url, "library_id": self.abs.library_id,
                 "folder_id": self.abs.folder_id, "podcast": self.config.podcast}
@@ -104,7 +151,7 @@ class Worker:
             "text": "\n\n".join(block["text"] for block in blocks), "title": title,
             "blocks": blocks, **speech_snapshot(blocks, self.config.provider),
             "author": safe_component(author), "url": bookmark.get("url", ""),
-            "article_id": job["article_id"], "voice": random.choice(self.config.voices), "model": self.config.model,
+            "article_id": job["article_id"], "label": self.config.label, "voice": random.choice(self.config.voices), "model": self.config.model,
             "created": bookmark.get("created", ""),
             "destination": self.destination(),
         }

@@ -88,7 +88,7 @@ class HostedSpeechTests(unittest.TestCase):
             {"voice_id": "one"}, {"voice_id": "two"},
         ])
         readeck, abs_client = Mock(), Mock()
-        abs_client.json.return_value = {"permissions": {"upload": True}}
+        abs_client.json.return_value = {"permissions": {"upload": True, "delete": True}}
         config = replace(self.config, voice="one,two")
         with patch("readeck_tts.speech.require_ffmpeg"):
             result = check_services(config, readeck, self.client, abs_client)

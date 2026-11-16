@@ -46,6 +46,26 @@ class State:
                 self.db.execute("ALTER TABLE jobs ADD COLUMN cleanup_pending INTEGER NOT NULL DEFAULT 0")
                 self.db.execute("UPDATE jobs SET cleanup_pending=1 WHERE state='complete'")
 
+        with self.db:
+            for name, definition in {
+                "listened": "INTEGER NOT NULL DEFAULT 0",
+                "archived": "INTEGER NOT NULL DEFAULT 0",
+                "tag_removed": "INTEGER NOT NULL DEFAULT 0",
+                "audio_deleted": "INTEGER NOT NULL DEFAULT 0",
+                "finish_error": "TEXT",
+            }.items():
+                if name not in columns:
+                    self.db.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
+
+    def finish_candidates(self, source, *, archive, remove_tag, delete_audio):
+        actions = [name + "=0" for name, enabled in (
+            ("archived", archive), ("tag_removed", remove_tag), ("audio_deleted", delete_audio)) if enabled]
+        if not actions:
+            return []
+        return self.db.execute("""SELECT * FROM jobs WHERE source=? AND state='complete'
+            AND abs_item_id IS NOT NULL AND abs_episode_id IS NOT NULL AND ("""
+            + " OR ".join(actions) + ") ORDER BY rowid", (source,)).fetchall()
+
     def cursor(self, source):
         row = self.db.execute("SELECT cursor FROM checkpoints WHERE source=?", (source,)).fetchone()
         if not row:
@@ -70,7 +90,8 @@ class State:
                     DO UPDATE SET cursor=excluded.cursor""", (source, max(times).astimezone(timezone.utc).isoformat()))
 
     def update(self, key, **fields):
-        allowed = {"state", "snapshot", "attempts", "next_attempt", "error", "abs_item_id", "abs_episode_id", "uploaded_at", "cleanup_pending"}
+        allowed = {"state", "snapshot", "attempts", "next_attempt", "error", "abs_item_id", "abs_episode_id", "uploaded_at", "cleanup_pending",
+                   "listened", "archived", "tag_removed", "audio_deleted", "finish_error"}
         if not fields or fields.keys() - allowed:
             raise ValueError("Invalid job update")
         assignments = ",".join(f"{name}=?" for name in fields)
@@ -89,4 +110,4 @@ class State:
 
     def status(self):
         return [dict(row) for row in self.db.execute("""SELECT key,article_id,state,attempts,error,
-            abs_item_id,abs_episode_id,cleanup_pending FROM jobs ORDER BY rowid""")]
+            abs_item_id,abs_episode_id,cleanup_pending,listened,archived,tag_removed,audio_deleted,finish_error FROM jobs ORDER BY rowid""")]

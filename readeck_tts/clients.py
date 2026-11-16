@@ -33,6 +33,8 @@ def check_services(config, readeck, tts, abs_client):
     user = abs_client.json("GET", "/me")
     if not user.get("permissions", {}).get("upload"):
         raise ConfigurationError("Audiobookshelf: the token's user needs upload permission")
+    if config.delete_audio_on_finish and not user.get("permissions", {}).get("delete"):
+        raise ConfigurationError("Audiobookshelf: the token's user needs delete permission; grant it or set DELETE_AUDIO_ON_FINISH=false")
     destination = abs_client.resolve()
     if config.provider == "kokoro":
         voices = tts.json("GET", "/audio/voices")["voices"]
@@ -86,6 +88,15 @@ class Readeck(API):
 
     def bookmark(self, article_id):
         return self.json("GET", "/bookmarks/" + quote(article_id, safe=""))
+
+    def finish(self, article_id, *, archive=False, remove_tag=None):
+        changes = {}
+        if archive:
+            changes["is_archived"] = True
+        if remove_tag is not None:
+            changes["remove_labels"] = [remove_tag]
+        with self.request("PATCH", "/bookmarks/" + quote(article_id, safe=""), json=changes):
+            pass
 
     def article(self, article_id):
         with self.request("GET", "/bookmarks/" + quote(article_id, safe="") + "/article") as response:
@@ -171,6 +182,24 @@ class Audiobookshelf(API):
             if filename == marker + ".mp3":
                 return item["id"], episode["id"]
         return None
+
+    def is_finished(self, item_id, episode_id):
+        try:
+            progress = self.json("GET", f"/me/progress/{quote(item_id, safe='')}/{quote(episode_id, safe='')}")
+        except RemoteError as error:
+            if error.status == 404:
+                return False  # Missing progress is not evidence of listening completion.
+            raise
+        return progress.get("isFinished") is True
+
+    def delete_episode(self, item_id, episode_id):
+        try:
+            with self.request("DELETE", f"/podcasts/{quote(item_id, safe='')}/episode/{quote(episode_id, safe='')}",
+                              params={"hard": 1}):
+                pass
+        except RemoteError as error:
+            if error.status != 404:
+                raise
 
     def upload(self, snapshot, key, audio):
         target = snapshot["destination"]

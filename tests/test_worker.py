@@ -114,6 +114,157 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse((self.config.data_dir / "articles" / self.key).exists())
         self.assertEqual(self.job()["cleanup_pending"], 0)
 
+    def prepare_listening(self):
+        self.config = replace(self.config, archive_on_finish=True,
+                              remove_tag_on_finish=True, delete_audio_on_finish=True)
+        self.worker.config = self.config
+        self.worker.snapshot(self.job())
+        self.worker.complete(self.key, ("show", "episode"))
+        self.abs.is_finished = Mock(return_value=True)
+        self.abs.delete_episode = Mock()
+        self.readeck.finish = Mock()
+
+    def test_finished_article_updates_readeck_before_deleting_audio(self):
+        self.prepare_listening()
+        calls = Mock()
+        calls.attach_mock(self.readeck.finish, "readeck")
+        calls.attach_mock(self.abs.delete_episode, "delete")
+        self.worker.finish_listened()
+        self.assertEqual([call[0] for call in calls.mock_calls], ["readeck", "delete"])
+        self.readeck.finish.assert_called_once_with("a", archive=True, remove_tag="tts")
+        self.assertEqual(tuple(self.job()[name] for name in ("listened", "archived", "tag_removed", "audio_deleted")), (1, 1, 1, 1))
+        self.worker.finish_listened()
+        self.abs.is_finished.assert_called_once()
+        self.abs.delete_episode.assert_called_once_with("show", "episode")
+        self.worker.discover()
+        self.worker.work()
+        self.assertEqual(self.kokoro.calls, 0)
+        self.assertEqual(self.job()["state"], "complete")
+
+    def test_completion_permission_errors_stop_worker_and_preserve_audio(self):
+        self.prepare_listening()
+        for status in (401, 403):
+            with self.subTest(status=status):
+                self.readeck.finish.side_effect = RemoteError("Readeck", "PATCH bookmark", status)
+                with self.assertRaisesRegex(ConfigurationError, f"Readeck:.*HTTP {status}"):
+                    self.worker.finish_listened()
+                self.abs.delete_episode.assert_not_called()
+                self.assertIn(f"HTTP {status}", self.job()["finish_error"])
+                self.assertEqual(self.job()["state"], "complete")
+                self.assertEqual(self.job()["archived"], 0)
+
+    def test_default_options_leave_finished_articles_untouched(self):
+        self.prepare_listening()
+        self.worker.config = Config("http://readeck", "secret", "http://abs", "secret")
+        self.worker.finish_listened()
+        self.abs.is_finished.assert_not_called()
+        self.readeck.finish.assert_not_called()
+        self.abs.delete_episode.assert_not_called()
+
+    def test_unfinished_article_is_untouched(self):
+        self.prepare_listening()
+        self.abs.is_finished.return_value = False
+        self.worker.finish_listened()
+        self.readeck.finish.assert_not_called()
+        self.abs.delete_episode.assert_not_called()
+        self.assertEqual(self.job()["listened"], 0)
+
+    def test_each_finish_option_is_independent(self):
+        from itertools import product
+        self.prepare_listening()
+        for archive, tag, audio in product((False, True), repeat=3):
+            with self.subTest(archive=archive, tag=tag, audio=audio):
+                self.state.update(self.key, listened=0, archived=0, tag_removed=0, audio_deleted=0)
+                self.readeck.finish.reset_mock()
+                self.abs.delete_episode.reset_mock()
+                self.abs.is_finished.reset_mock()
+                self.worker.config = replace(self.config, archive_on_finish=archive,
+                                             remove_tag_on_finish=tag, delete_audio_on_finish=audio)
+                self.worker.finish_listened()
+                self.assertEqual(self.readeck.finish.called, archive or tag)
+                if archive or tag:
+                    self.readeck.finish.assert_called_once_with("a", archive=archive, remove_tag="tts" if tag else None)
+                self.assertEqual(self.abs.delete_episode.called, audio)
+                self.assertEqual(self.abs.is_finished.called, archive or tag or audio)
+
+    def test_readeck_failure_preserves_audio_and_retries_after_restart(self):
+        self.prepare_listening()
+        self.readeck.finish.side_effect = RemoteError("Readeck", "PATCH", 503)
+        self.worker.finish_listened()
+        self.abs.delete_episode.assert_not_called()
+        self.assertEqual(self.job()["listened"], 1)
+        self.assertIsNotNone(self.job()["finish_error"])
+        self.readeck.finish.side_effect = None
+        self.abs.is_finished.side_effect = AssertionError("Completion must be durable")
+        restarted = Worker(self.config, self.state, self.readeck, self.kokoro, self.abs)
+        restarted.finish_listened()
+        self.abs.delete_episode.assert_called_once()
+        self.assertIsNone(self.job()["finish_error"])
+
+    def test_deletion_failure_does_not_repeat_readeck_updates(self):
+        self.prepare_listening()
+        self.abs.delete_episode.side_effect = RemoteError("Audiobookshelf", "DELETE", 503)
+        self.worker.finish_listened()
+        self.assertEqual(self.job()["audio_deleted"], 0)
+        self.abs.delete_episode.side_effect = None
+        self.worker.finish_listened()
+        self.readeck.finish.assert_called_once()
+        self.assertEqual(self.job()["audio_deleted"], 1)
+
+    def test_finish_uses_saved_tag_and_destination(self):
+        self.prepare_listening()
+        self.worker.config = replace(self.config, label="other")
+        self.worker.finish_listened()
+        self.readeck.finish.assert_called_once_with("a", archive=True, remove_tag="tts")
+        self.state.update(self.key, audio_deleted=0)
+        self.worker.config = replace(self.config, abs_url="http://other")
+        self.abs.delete_episode.reset_mock()
+        self.worker.finish_listened()
+        self.abs.delete_episode.assert_not_called()
+        self.assertIn("Destination changed", self.job()["finish_error"])
+
+    def test_once_runs_completion_pass(self):
+        self.prepare_listening()
+        with patch("readeck_tts.__main__.Config.from_env", return_value=self.config), \
+                patch("readeck_tts.__main__.Worker", return_value=self.worker), \
+                patch("readeck_tts.__main__.check_services"), \
+                patch("sys.argv", ["readeck-tts", "once"]):
+            main()
+        self.assertEqual(self.job()["audio_deleted"], 1)
+        self.assertEqual(self.kokoro.calls, 0)
+
+    def test_lost_deletion_commit_retries_without_progress_or_readeck_changes(self):
+        self.prepare_listening()
+        update = self.state.update
+
+        def lose_commit(key, **fields):
+            if fields.get("audio_deleted"):
+                raise RuntimeError("simulated crash before deletion commit")
+            update(key, **fields)
+
+        self.state.update = lose_commit
+        self.worker.finish_listened()
+        self.state.update = update
+        self.abs.is_finished.side_effect = AssertionError("Deleted progress is unavailable")
+        self.worker.finish_listened()
+        self.readeck.finish.assert_called_once()
+        self.assertEqual(self.abs.delete_episode.call_count, 2)
+        self.assertEqual(self.job()["audio_deleted"], 1)
+
+    def test_legacy_snapshot_uses_current_tag(self):
+        self.prepare_listening()
+        snapshot = json.loads(self.job()["snapshot"])
+        snapshot.pop("label")
+        self.state.update(self.key, snapshot=json.dumps(snapshot))
+        self.worker.finish_listened()
+        self.readeck.finish.assert_called_once_with("a", archive=True, remove_tag="tts")
+
+    def test_missing_bookmark_does_not_prevent_audio_cleanup(self):
+        self.prepare_listening()
+        self.readeck.finish.side_effect = RemoteError("Readeck", "PATCH", 404)
+        self.worker.finish_listened()
+        self.abs.delete_episode.assert_called_once()
+
     def test_upload_failure_reuses_saved_audio_and_input(self):
         self.abs.fail = True
         with self.assertRaises(RemoteError):
@@ -415,6 +566,35 @@ class RecoveryTests(unittest.TestCase):
 class ClientTests(unittest.TestCase):
     def setUp(self):
         self.config = Config("http://readeck", "secret", "http://abs", "secret")
+
+    def test_completion_endpoints_quote_ids_and_preserve_unrelated_tags(self):
+        client = Readeck(self.config)
+        self.addCleanup(client.session.close)
+        client.request = Mock()
+        client.request.return_value.__enter__ = Mock()
+        client.request.return_value.__exit__ = Mock(return_value=False)
+        client.finish("article/id", archive=True, remove_tag="listen")
+        client.request.assert_called_once_with("PATCH", "/bookmarks/article%2Fid",
+                                               json={"is_archived": True, "remove_labels": ["listen"]})
+        abs_client = Audiobookshelf(self.config)
+        self.addCleanup(abs_client.session.close)
+        abs_client.json = Mock(return_value={"isFinished": True})
+        self.assertTrue(abs_client.is_finished("show/id", "episode/id"))
+        abs_client.json.assert_called_once_with("GET", "/me/progress/show%2Fid/episode%2Fid")
+        abs_client.json.side_effect = RemoteError("Audiobookshelf", "GET", 404)
+        self.assertFalse(abs_client.is_finished("show", "episode"))
+        abs_client.json.side_effect = RemoteError("Audiobookshelf", "GET", 503)
+        with self.assertRaises(RemoteError):
+            abs_client.is_finished("show", "episode")
+        abs_client.request = client.request
+        abs_client.request.reset_mock()
+        abs_client.delete_episode("show/id", "episode/id")
+        abs_client.request.assert_called_once_with("DELETE", "/podcasts/show%2Fid/episode/episode%2Fid", params={"hard": 1})
+        abs_client.request.side_effect = RemoteError("Audiobookshelf", "DELETE", 404)
+        abs_client.delete_episode("show", "episode")
+        abs_client.request.side_effect = RemoteError("Audiobookshelf", "DELETE", 403)
+        with self.assertRaises(RemoteError):
+            abs_client.delete_episode("show", "episode")
 
     def test_podcast_episode_lookup_follows_pagination_and_filename(self):
         client = Audiobookshelf(self.config)

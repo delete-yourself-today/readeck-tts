@@ -36,7 +36,7 @@ class ServiceHandler(BaseHTTPRequestHandler):
         if path == "/api/profile":
             data = {"id": "user"}
         elif path == "/api/me":
-            data = {"permissions": {"upload": True}}
+            data = {"permissions": {"upload": True, "delete": True}}
         elif path == "/api/libraries":
             data = {"libraries": [{"id": "library", "name": "Podcasts", "mediaType": "podcast",
                                     "folders": [{"id": "folder"}]}]}

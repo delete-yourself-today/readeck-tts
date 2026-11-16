@@ -85,6 +85,7 @@ def main():
                 return
             if args.command == "once":
                 check_services(config, worker.readeck, worker.tts, worker.abs)
+                worker.finish_listened()
                 worker.discover()
                 worker.work(limit=args.max_jobs)
                 return
@@ -94,6 +95,7 @@ def main():
                 try:
                     if time.monotonic() >= next_poll:
                         check_services(config, worker.readeck, worker.tts, worker.abs)
+                        worker.finish_listened()
                         worker.discover()
                         ready = True
                         next_poll = time.monotonic() + config.poll_interval

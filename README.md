@@ -19,9 +19,9 @@ Required settings:
 | Variable | Meaning |
 | --- | --- |
 | `READECK_URL` | Readeck instance base URL, without `/api` |
-| `READECK_API_TOKEN` | Token with access to bookmarks and extracted articles |
+| `READECK_API_TOKEN` | Token with access to bookmarks and extracted articles, plus bookmark write access for completion actions |
 | `AUDIOBOOKSHELF_URL` | Audiobookshelf base URL, without `/api` |
-| `AUDIOBOOKSHELF_API_TOKEN` | Token with library access and upload permission |
+| `AUDIOBOOKSHELF_API_TOKEN` | Token for the account you listen with, with library access, upload permission, and delete permission when audio deletion is enabled |
 
 Optional settings:
 
@@ -42,7 +42,10 @@ Optional settings:
 | `GEMINI_API_KEY` | None | Required when using Gemini |
 | `GEMINI_MODEL` | `gemini-3.8-flash-lite-tts` | `gemini-3.8-flash-tts` or `gemini-3.8-flash-lite-tts` |
 | `GEMINI_VOICE` | `Charon` | Voice name/ID, or a comma-separated pool |
-| `POLL_INTERVAL_SECONDS` | `300` | Time between discovery polls |
+| `ARCHIVE_ON_FINISH` | `false` | Archive the Readeck article after listening finishes |
+| `REMOVE_TAG_ON_FINISH` | `false` | Remove its TTS selection tag after listening finishes, preserving other labels |
+| `DELETE_AUDIO_ON_FINISH` | `false` | Delete the finished episode and its audio from Audiobookshelf |
+| `POLL_INTERVAL_SECONDS` | `300` | Time between discovery and listening-completion polls |
 | `RETRY_INTERVAL_SECONDS` | `30` | Service retry delay, indexing checks, and initial article retry delay |
 | `TTS_TIMEOUT_SECONDS` | `1800` | Socket read timeout while waiting for audio; not an overall job deadline |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
@@ -94,6 +97,43 @@ no alternate library layouts or backend-specific deployment requirements.
 Text, provider, model, voice, delivery settings, and destination are frozen when
 a job is first snapshotted, so configuration changes do not silently alter an
 in-progress delivery.
+
+When any completion action is enabled, each poll (including `once`) checks Audiobookshelf's `isFinished`
+flag for delivered episodes. This uses the API token's listening account;
+marking an episode finished manually also triggers completion actions. Missing
+progress or a missing episode does not count as finished.
+
+All three completion actions are disabled by default and can be enabled
+independently with `ARCHIVE_ON_FINISH=true`, `REMOVE_TAG_ON_FINISH=true`, or
+`DELETE_AUDIO_ON_FINISH=true`. Boolean settings also accept `1`/`0`, `yes`/`no`,
+and `on`/`off`, ignoring case. Blank values use the default `false`.
+The enabled Readeck changes are sent together before deleting the Audiobookshelf
+episode and its server audio. Client downloads are outside this cleanup.
+
+Listening completion and each successful action are stored in SQLite so failures
+retry on subsequent polls and survive restarts. `status` exposes `listened`,
+`archived`, `tag_removed`, `audio_deleted`, and `finish_error`; delivery remains
+`complete`, preventing regeneration. The `cleanup` command still only removes
+local temporary audio. Readeck errors preserve the server audio until the enabled
+Readeck changes succeed; an already deleted bookmark needs no further changes.
+
+Permission errors require operator intervention: `check`, `once`, and `run`
+reject an Audiobookshelf token without upload permission. When
+`DELETE_AUDIO_ON_FINISH=true`, they also check delete permission before processing.
+Readeck write permission is checked by the server when an enabled bookmark update
+is attempted. HTTP 401/403 responses produce a service-specific configuration
+error and exit the worker with status 1, rather than retrying article generation.
+For completion actions, the HTTP failure is also saved in `finish_error`; already
+successful steps remain recorded. Correct the token/permissions or disable the
+relevant action and restart. Compose's `unless-stopped` policy restarts a failed
+worker, so unresolved permission errors may repeat in its logs.
+
+These settings also apply to previously delivered jobs in the retained database.
+Enabling a previously disabled action applies it on a later poll, including after
+another action has already completed. Keep the database volume when upgrading.
+Only jobs matching the current Readeck source and saved Audiobookshelf destination
+are eligible. New snapshots remember the selection tag used for that article;
+older snapshots use the current `READECK_TAG` when removing it.
 
 ## Run with Docker Compose
 

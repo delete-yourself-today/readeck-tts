@@ -28,10 +28,32 @@ class ConfigurationTests(unittest.TestCase):
         with patch.dict(os.environ, self.required_environment(), clear=True):
             config = Config.from_env()
         self.assertEqual(config.kokoro_url, "http://speech:8880/v1")
+        self.assertEqual((config.archive_on_finish, config.remove_tag_on_finish, config.delete_audio_on_finish),
+                         (False, False, False))
         self.assertEqual((config.label, config.library, config.podcast, config.voice),
                          ("tts", "Podcasts", "Readeck", "af_heart"))
         self.assertNotIn("reader-secret", repr(config))
         self.assertNotIn("audio-secret", repr(config))
+
+    def test_finish_options_default_off_and_parse_explicit_opt_ins(self):
+        names = ("ARCHIVE_ON_FINISH", "REMOVE_TAG_ON_FINISH", "DELETE_AUDIO_ON_FINISH")
+        for value, expected in (("", False), ("true", True), ("false", False), ("OFF", False)):
+            with patch.dict(os.environ, self.required_environment() | dict.fromkeys(names, value), clear=True):
+                config = Config.from_env()
+                self.assertEqual((config.archive_on_finish, config.remove_tag_on_finish,
+                                  config.delete_audio_on_finish), (expected,) * 3)
+        for name in names:
+            with patch.dict(os.environ, self.required_environment() | {name: "maybe"}, clear=True):
+                with self.assertRaisesRegex(ValueError, name):
+                    Config.from_env()
+
+    def test_delete_permission_required_only_when_audio_deletion_enabled(self):
+        readeck, kokoro, abs_client = Mock(), Mock(), Mock()
+        abs_client.json.return_value = {"permissions": {"upload": True}}
+        kokoro.json.return_value = {"voices": ["af_heart"]}
+        with self.assertRaisesRegex(ConfigurationError, "DELETE_AUDIO_ON_FINISH=false"):
+            check_services(replace(self.config, delete_audio_on_finish=True), readeck, kokoro, abs_client)
+        check_services(replace(self.config, delete_audio_on_finish=False), readeck, kokoro, abs_client)
 
     def test_kokoro_endpoint_must_be_explicit(self):
         environment = self.required_environment()
@@ -155,7 +177,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_preflight_rejects_missing_voice(self):
         readeck, kokoro, abs_client = Mock(), Mock(), Mock()
-        abs_client.json.return_value = {"permissions": {"upload": True}}
+        abs_client.json.return_value = {"permissions": {"upload": True, "delete": True}}
         kokoro.json.return_value = {"voices": ["af_bella"]}
         with self.assertRaisesRegex(ConfigurationError, "KOKORO_VOICE"):
             check_services(self.config, readeck, kokoro, abs_client)
@@ -163,7 +185,7 @@ class ConfigurationTests(unittest.TestCase):
     def test_preflight_checks_every_configured_voice(self):
         config = replace(self.config, voice="af_heart,af_bella")
         readeck, kokoro, abs_client = Mock(), Mock(), Mock()
-        abs_client.json.return_value = {"permissions": {"upload": True}}
+        abs_client.json.return_value = {"permissions": {"upload": True, "delete": True}}
         for voices in (["af_heart", "af_bella"], [{"id": "af_heart"}, {"id": "af_bella"}]):
             with self.subTest(voices=voices):
                 kokoro.json.return_value = {"voices": voices}

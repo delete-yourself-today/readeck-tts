@@ -40,6 +40,9 @@ class Config:
     poll_interval: int = 300
     retry_interval: int = 30
     tts_timeout: int = 1800
+    archive_on_finish: bool = False
+    remove_tag_on_finish: bool = False
+    delete_audio_on_finish: bool = False
     provider: str = "kokoro"
     elevenlabs_token: str = field(default="", repr=False)
     gemini_token: str = field(default="", repr=False)
@@ -75,6 +78,14 @@ class Config:
                 raise ValueError(f"{name} must be a positive integer")
             return value
 
+        def boolean(name):
+            value = optional(name, "false").lower()
+            if value in {"true", "1", "yes", "on"}:
+                return True
+            if value in {"false", "0", "no", "off"}:
+                return False
+            raise ValueError(f"{name} must be true or false")
+
         provider = optional("TTS_PROVIDER", "kokoro").lower()
         if provider not in SPEECH_DEFAULTS:
             raise ValueError("TTS_PROVIDER must be kokoro, elevenlabs, or gemini")
@@ -94,6 +105,9 @@ class Config:
             model=optional(prefix + "_MODEL", default_model),
             provider=provider, elevenlabs_token=elevenlabs_token, gemini_token=gemini_token,
             label=optional("READECK_TAG", cls.label),
+            archive_on_finish=boolean("ARCHIVE_ON_FINISH"),
+            remove_tag_on_finish=boolean("REMOVE_TAG_ON_FINISH"),
+            delete_audio_on_finish=boolean("DELETE_AUDIO_ON_FINISH"),
             library=optional("AUDIOBOOKSHELF_LIBRARY", cls.library),
             podcast=unicodedata.normalize("NFC", " ".join(optional("AUDIOBOOKSHELF_PODCAST", cls.podcast).split())),
             folder_id=optional("AUDIOBOOKSHELF_FOLDER_ID"),
