@@ -30,6 +30,13 @@ class HostedSpeech(API):
         chunks = snapshot.get("speech_chunks")
         if not chunks or not all(isinstance(chunk, str) and chunk.strip() for chunk in chunks):
             raise ConfigurationError(f"{self.name}: saved job is missing its speech chunk plan")
+        contexts = snapshot.get("speech_contexts", [{} for _ in chunks])
+        if (not isinstance(contexts, list) or len(contexts) != len(chunks)
+                or any(not isinstance(context, dict)
+                       or any(key not in {"previous_text", "next_text"}
+                              or not isinstance(value, str) or not value.strip()
+                              for key, value in context.items()) for context in contexts)):
+            raise ConfigurationError(f"{self.name}: saved job has an invalid speech context plan")
         directory = output.parent / "chunks"
         directory.mkdir(exist_ok=True)
         paths = []
@@ -41,7 +48,7 @@ class HostedSpeech(API):
             part = target.with_name(target.name + ".part")
             try:
                 log.info("Generating %s chunk %d/%d", self.name, index + 1, len(chunks))
-                usage = self.generate_chunk(snapshot, text, part)
+                usage = self.generate_chunk(snapshot, text, part, **contexts[index])
                 if not valid_chunk(part, self.audio_format):
                     raise RuntimeError(f"{self.name} returned invalid or empty audio")
                 commit_file(part, target)
@@ -74,12 +81,15 @@ class ElevenLabs(HostedSpeech):
         for voice in voices:
             self.json("GET", "/v1/voices/" + quote(voice, safe=""))
 
-    def generate_chunk(self, snapshot, text, output):
+    def generate_chunk(self, snapshot, text, output, *, previous_text=None, next_text=None):
+        context = {key: value for key, value in
+                   (("previous_text", previous_text), ("next_text", next_text)) if value}
         with self.request("POST", "/v1/text-to-speech/" + quote(snapshot["voice"], safe=""),
                           params={"output_format": "mp3_44100_128"}, json={
                               "text": text, "model_id": snapshot["model"],
                               "voice_settings": snapshot["speech_options"],
                               "seed": snapshot.get("speech_seed", 12345),
+                              **context,
                           }, stream=True, timeout=(10, self.timeout)) as response:
             try:
                 with output.open("wb") as handle:

@@ -93,7 +93,7 @@ class ElevenLabsComparisonTests(unittest.TestCase):
     def test_v4_uses_delivery_tags_and_supported_voice_settings(self):
         blocks = [{"type": "title", "text": "Title"}, {"type": "paragraph", "text": "Body."}]
         self.assertEqual(speech_text(blocks, "eleven_v4"),
-                         "[Thoughtful, measured narration]\n\nTitle\n\n[short pause]\n\nBody.")
+                         "[Thoughtful, measured narration]\n\nTitle\n\n[long pause]\n\nBody.")
         client = MagicMock()
         response = client.post.return_value.__enter__.return_value
         response.ok = True

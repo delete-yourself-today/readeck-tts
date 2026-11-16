@@ -15,7 +15,7 @@ import requests
 from readeck_tts.audio import join_audio, valid_chunk, write_audio
 from readeck_tts.clients import ConfigurationError, RemoteError, check_services
 from readeck_tts.config import Config, SPEECH_DEFAULTS
-from readeck_tts.narration import speech_snapshot
+from readeck_tts.narration import neighboring_text, render, speech_snapshot
 from readeck_tts.speech import ElevenLabs, Gemini, speech_client
 
 
@@ -149,6 +149,50 @@ class HostedSpeechTests(unittest.TestCase):
             self.client.generate(self.snapshot, self.output)
         self.assertEqual(self.client.generate_chunk.call_count, 2)
 
+    def test_context_is_sent_separately_and_preserved_when_resuming(self):
+        self.snapshot["speech_contexts"] = [
+            {"next_text": "Second chunk."}, {"previous_text": "First chunk."}]
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.headers = {}
+        response.iter_content.return_value = [MP3_AUDIO]
+        self.client.request = Mock(side_effect=[response, RemoteError("ElevenLabs", "download")])
+        with patch("readeck_tts.speech.require_ffmpeg"), self.assertRaises(RemoteError):
+            self.client.generate(self.snapshot, self.output)
+        first = self.client.request.call_args_list[0].kwargs["json"]
+        self.assertEqual(first["text"], "First chunk.")
+        self.assertEqual(first["next_text"], "Second chunk.")
+        self.assertNotIn("previous_text", first)
+        restarted = ElevenLabs(self.config)
+        self.addCleanup(restarted.session.close)
+        restarted.request = Mock(return_value=response)
+        with patch("readeck_tts.speech.require_ffmpeg"), patch("readeck_tts.speech.join_audio"):
+            restarted.generate(self.snapshot, self.output)
+        restarted.request.assert_called_once()
+        second = restarted.request.call_args.kwargs["json"]
+        self.assertEqual(second["text"], "Second chunk.")
+        self.assertEqual(second["previous_text"], "First chunk.")
+        self.assertNotIn("next_text", second)
+
+    def test_legacy_plans_send_no_context_and_invalid_plans_fail_before_generation(self):
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.headers = {}
+        response.iter_content.return_value = [MP3_AUDIO]
+        self.client.request = Mock(return_value=response)
+        self.client.generate_chunk(self.snapshot, "First chunk.", self.output)
+        payload = self.client.request.call_args.kwargs["json"]
+        self.assertNotIn("previous_text", payload)
+        self.assertNotIn("next_text", payload)
+        self.client.request.reset_mock()
+        for contexts in ([], None, [{}, {"text": "unexpected"}], [{}, {"next_text": 5}]):
+            with self.subTest(contexts=contexts), patch("readeck_tts.speech.require_ffmpeg"):
+                with self.assertRaisesRegex(ConfigurationError, "context plan"):
+                    self.client.generate(self.snapshot | {"speech_contexts": contexts}, self.output)
+        self.client.request.assert_not_called()
+
     def test_invalid_audio_is_not_committed_to_the_cache(self):
         def bad_audio(snapshot, text, output):
             output.write_bytes(b"not audio")
@@ -213,8 +257,59 @@ class NarrationPlanTests(unittest.TestCase):
                 self.assertGreater(len(snapshot["speech_chunks"]), 5)
                 self.assertTrue(all(0 < len(chunk) <= 4000 for chunk in snapshot["speech_chunks"]))
                 text = " ".join(snapshot["speech_chunks"])
-                text = text.replace("[Thoughtful, measured narration]", "").replace("[short pause]", "").replace("<short pause>", "")
+                for tag in ("[Thoughtful, measured narration]", "[short pause]", "[pause]",
+                            "[long pause]", "<short pause>"):
+                    text = text.replace(tag, "")
                 self.assertEqual(text.split(), " ".join(block["text"] for block in blocks).split())
+
+    def test_elevenlabs_structural_pause_hierarchy(self):
+        blocks = [{"type": kind, "text": text} for kind, text in (
+            ("title", "Title"), ("paragraph", "Opening."), ("paragraph", "Next."),
+            ("heading", "Section"), ("paragraph", "Body."), ("list_item", "One"),
+            ("list_item", "Two"), ("blockquote", "Quote."), ("paragraph", "End."))]
+        self.assertEqual(render(blocks, "elevenlabs"),
+                         "[Thoughtful, measured narration]\n\nTitle\n\n[long pause]\n\nOpening."
+                         "\n\n[pause]\n\nNext.\n\n[long pause]\n\nSection\n\n[pause]\n\nBody."
+                         "\n\n[pause]\n\nOne\n\n[short pause]\n\nTwo\n\n[pause]\n\nQuote."
+                         "\n\n[pause]\n\nEnd.")
+        self.assertEqual(render([{"type": "heading", "level": 3, "text": "Minor"}],
+                                "elevenlabs", blocks[1]),
+                         "[Thoughtful, measured narration]\n\n[pause]\n\nMinor")
+
+    def test_chunk_boundaries_preserve_pauses_and_context_uses_only_source_words(self):
+        blocks = [{"type": "paragraph", "text": ("Earlier sentence. " * 130).strip()},
+                  {"type": "paragraph", "text": ("Middle sentence. " * 130).strip()},
+                  {"type": "heading", "level": 2, "text": "New section"},
+                  {"type": "paragraph", "text": ("Later sentence. " * 130).strip()}]
+        plan = speech_snapshot(blocks, "elevenlabs")
+        self.assertEqual(len(plan["speech_chunks"]), 3)
+        self.assertTrue(plan["speech_chunks"][1].startswith(
+            "[Thoughtful, measured narration]\n\n[pause]\n\nMiddle"))
+        self.assertTrue(plan["speech_chunks"][2].startswith(
+            "[Thoughtful, measured narration]\n\n[pause]\n\nLater"))
+        self.assertEqual(plan["speech_contexts"], [
+            {"next_text": "Middle sentence. Middle sentence."},
+            {"previous_text": "Earlier sentence. Earlier sentence.",
+             "next_text": "Later sentence. Later sentence."},
+            {"previous_text": "Middle sentence. New section"}])
+        heading_plan = speech_snapshot([
+            {"type": "paragraph", "text": "Earlier sentence. " * 160},
+            {"type": "heading", "level": 2, "text": "New section " * 120}], "elevenlabs")
+        self.assertTrue(heading_plan["speech_chunks"][1].startswith(
+            "[Thoughtful, measured narration]\n\n[long pause]\n\nNew section"))
+        single = speech_snapshot([blocks[2]], "elevenlabs")
+        self.assertEqual(single["speech_contexts"], [{}])
+        self.assertNotIn("[pause]", single["speech_chunks"][0])
+
+    def test_neighboring_text_caps_long_sentences_at_whole_words(self):
+        blocks = [{"text": "start " + "middle " * 150 + "end"}]
+        for tail in (False, True):
+            excerpt = neighboring_text(blocks, tail=tail)
+            self.assertLessEqual(len(excerpt), 500)
+            self.assertNotIn("[", excerpt)
+            self.assertTrue(all(word in {"start", "middle", "end"} for word in excerpt.split()))
+        self.assertTrue(neighboring_text(blocks).startswith("start "))
+        self.assertTrue(neighboring_text(blocks, tail=True).endswith(" end"))
 
     def test_single_extremely_long_word_is_split_without_character_loss(self):
         block = {"type": "paragraph", "text": "x" * 10000}

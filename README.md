@@ -148,7 +148,7 @@ to `ELEVENLABS_VOICE` and `GEMINI_VOICE`, using their provider-specific IDs/name
 One voice narrates the whole article, including every chunk.
 
 New jobs preserve headings (including their levels), paragraphs, list items,
-and quotations from Readeck's article HTML. Narration adds explicit pauses:
+and quotations from Readeck's article HTML. Kokoro narration adds explicit pauses:
 1 second after the title, 0.8 seconds before headings, 0.6 seconds after headings
 and around quotations, 0.4 seconds between paragraphs, and 0.3 seconds between
 list items. Adjacent boundaries use the longer pause rather than stacking them.
@@ -164,14 +164,23 @@ saved in the job snapshot; retries reuse that exact input. Existing snapshots
 continue using their original input, and completed articles are not regenerated.
 
 ElevenLabs v4 and v4 Turbo share one HTTP API and the same rendering: a restrained
-narration cue plus `[short pause]` at block boundaries, with Stability `0.5` and
-Similarity `0.75`. Gemini 3.8 uses the Interactions API with style metadata and
+narration cue plus `[long pause]` after the title and before major headings
+(levels 1–2), `[short pause]` between consecutive list items, and `[pause]` at
+other block boundaries, with Stability `0.5` and Similarity `0.75`. Pauses are
+preserved when a block boundary falls between requests. Gemini 3.8 uses the Interactions API with style metadata and
 `<short pause>` tags. These qualitative pauses are interpreted by the model;
 they do not promise the exact durations used by Kokoro. Playback speed stays
 unchanged and no pronunciation overrides are applied.
 
 Hosted articles are split at paragraph/sentence boundaries into requests of at
 most 4,000 rendered characters, splitting exceptionally long sentences at words.
+New ElevenLabs jobs also save `previous_text` and `next_text` context for each
+request: up to two sentences from the neighboring chunks, capped at 500
+characters per side at word boundaries. Context comes from source text without
+generated narration tags and is sent separately from the text to be spoken.
+The first request has no previous context, and the last has no next context.
+Saved jobs retain their original text and context plan across retries; older
+jobs without context continue using their original requests.
 Each request's native audio and usage receipt are saved in a `chunks` directory
 before assembly. An interrupted or failed generation reuses valid completed
 chunks; a failed MP3 assembly does not regenerate them. A request interrupted
@@ -397,8 +406,8 @@ documented defaults. To compare Eleven v4 using the same voice:
   --model eleven_v4 --output data/comparisons/elevenlabs-v4-sample
 ```
 
-The v4 renderer uses a thoughtful narration cue and qualitative `[short pause]`
-tags at block boundaries. It sends only Stability and Similarity settings;
+The v4 renderer uses the same narration cue and structural `[short pause]`,
+`[pause]`, and `[long pause]` tags as the worker. It sends only Stability and Similarity settings;
 v4 does not support the v2 SSML, Style, or Speed controls. Neither version applies
 pronunciation overrides or rewrites the article. Use `--model eleven_v4_turbo`
 to compare the Turbo variant with the same text rendering and voice settings. The script

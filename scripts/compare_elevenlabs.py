@@ -13,6 +13,7 @@ from mutagen.mp3 import MP3
 import requests
 
 from readeck_tts.text import narration_input
+from readeck_tts.narration import render
 
 
 MODEL = "eleven_multilingual_v2"
@@ -22,7 +23,7 @@ GEORGE = "JBFqnCBsd6RMkjVDRZzb"
 
 def speech_text(blocks, model=MODEL):
     if model in V4_MODELS:
-        return "[Thoughtful, measured narration]\n\n" + narration_input(blocks, "[short pause]")
+        return render(blocks, "elevenlabs")
     return narration_input(blocks, '<break time="{duration}s" />')
 
 
