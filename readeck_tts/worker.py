@@ -69,15 +69,48 @@ class Worker:
                 self.state.db.close()
 
     def discover(self):
-        events = self.readeck.sync(self.state.cursor(self.config.readeck_url))
-        self.state.discover(self.config.readeck_url, events)
+        source = self.config.readeck_url
+        for job in self.state.pending_tag_removals(source):
+            self.clear_delivered_tag(job)
+        events = self.readeck.sync(self.state.cursor(source))
+        requested_again = set()
+        for article_id in {str(event["id"]) for event in events if event.get("type") != "delete"}:
+            previous = self.state.latest_job(source, article_id)
+            if previous and previous["state"] == "complete" and previous["tag_removed"]:
+                try:
+                    if self.has_label(article_id, self.config.label):
+                        requested_again.add(article_id)
+                except RemoteError as error:
+                    if error.status != 404:
+                        raise
+        self.state.discover(source, events, requested_again)
         log.info("Sync recorded %d changes", len(events))
+
+    def has_label(self, article_id, label):
+        bookmark = self.readeck.bookmark(article_id)
+        return not bookmark.get("is_deleted") and label in bookmark.get("labels", [])
+
+    def clear_delivered_tag(self, job):
+        snapshot = json.loads(job["snapshot"]) if job["snapshot"] else {}
+        label = snapshot.get("label", self.config.label)
+        article_id = job["article_id"]
+        key = job["key"]
+        try:
+            if self.has_label(article_id, label):
+                self.readeck.finish(article_id, remove_tag=label)
+        except RemoteError as error:
+            if error.status != 404:
+                self.state.update(key, tag_error=str(error))
+                error.check_credentials()
+                log.warning("Tag removal for delivered job %s will retry next poll: %s", key, error)
+                return
+        self.state.update(key, tag_removed=1, tag_error=None)
 
     def finish_listened(self):
         """Retry each post-listening action without reopening a delivered job."""
         jobs = self.state.finish_candidates(
             self.config.readeck_url, archive=self.config.archive_on_finish,
-            remove_tag=self.config.remove_tag_on_finish, delete_audio=self.config.delete_audio_on_finish)
+            delete_audio=self.config.delete_audio_on_finish)
         for job in jobs:
             key = job["key"]
             try:
@@ -91,22 +124,14 @@ class Worker:
                         continue
                     # Save evidence before deletion can remove remote progress.
                     self.state.update(key, listened=1)
-                archive = self.config.archive_on_finish and not job["archived"]
-                remove_tag = self.config.remove_tag_on_finish and not job["tag_removed"]
-                if archive or remove_tag:
+                if self.config.archive_on_finish and not job["archived"]:
                     try:
-                        self.readeck.finish(job["article_id"], archive=archive,
-                                            remove_tag=snapshot.get("label", self.config.label) if remove_tag else None)
+                        self.readeck.finish(job["article_id"], archive=True)
                     except RemoteError as error:
                         if error.status != 404:
                             raise
                         # A deleted bookmark needs no further Readeck changes.
-                    fields = {}
-                    if archive:
-                        fields["archived"] = 1
-                    if remove_tag:
-                        fields["tag_removed"] = 1
-                    self.state.update(key, **fields)
+                    self.state.update(key, archived=1)
                 if self.config.delete_audio_on_finish and not job["audio_deleted"]:
                     self.abs.delete_episode(job["abs_item_id"], job["abs_episode_id"])
                     self.state.update(key, audio_deleted=1)
@@ -212,6 +237,7 @@ class Worker:
         existing = self.abs.find_item(key)
         if existing:
             self.complete(key, existing)
+            self.clear_delivered_tag(self.state.get(key))
             return
         if job["state"] == "awaiting_index":
             self.abs.request_scan()

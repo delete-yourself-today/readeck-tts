@@ -41,7 +41,6 @@ class Config:
     retry_interval: int = 30
     tts_timeout: int = 1800
     archive_on_finish: bool = False
-    remove_tag_on_finish: bool = False
     delete_audio_on_finish: bool = False
     provider: str = "kokoro"
     elevenlabs_token: str = field(default="", repr=False)
@@ -106,7 +105,6 @@ class Config:
             provider=provider, elevenlabs_token=elevenlabs_token, gemini_token=gemini_token,
             label=optional("READECK_TAG", cls.label),
             archive_on_finish=boolean("ARCHIVE_ON_FINISH"),
-            remove_tag_on_finish=boolean("REMOVE_TAG_ON_FINISH"),
             delete_audio_on_finish=boolean("DELETE_AUDIO_ON_FINISH"),
             library=optional("AUDIOBOOKSHELF_LIBRARY", cls.library),
             podcast=unicodedata.normalize("NFC", " ".join(optional("AUDIOBOOKSHELF_PODCAST", cls.podcast).split())),

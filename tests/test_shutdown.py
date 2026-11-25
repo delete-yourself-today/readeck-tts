@@ -46,7 +46,7 @@ class ServiceHandler(BaseHTTPRequestHandler):
             data = [] if self.server.mode == "idle" else [
                 {"id": "article", "time": "2026-11-12T12:00:00Z", "type": "update"}]
         elif path == "/api/bookmarks/article":
-            data = {"title": "Shutdown test", "url": "https://example.com/article", "labels": ["tts"],
+            data = {"title": "Shutdown test", "url": "https://example.com/article", "labels": self.server.labels,
                     "loaded": True, "has_article": True, "created": "2026-11-12T12:00:00Z"}
         elif path == "/api/bookmarks/article/article":
             self.respond(b"<p>A test article.</p>", "text/html")
@@ -64,6 +64,14 @@ class ServiceHandler(BaseHTTPRequestHandler):
             self.respond(data)
         except (BrokenPipeError, ConnectionResetError):
             pass
+
+    def do_PATCH(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path == "/api/bookmarks/article" and body == {"remove_labels": ["tts"]}:
+            self.server.labels = [label for label in self.server.labels if label != "tts"]
+            self.respond({})
+        else:
+            self.send_error(400)
 
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
@@ -108,6 +116,7 @@ class ShutdownTests(unittest.TestCase):
         self.data = self.root / "data"
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), ServiceHandler)
         self.server.mode = "idle"
+        self.server.labels = ["tts", "keep"]
         self.server.blocked = threading.Event()
         self.server.release = threading.Event()
         self.server.filename = None
@@ -221,6 +230,13 @@ class ShutdownTests(unittest.TestCase):
         self.assertEqual(self.job()["state"], "complete")
         self.assertFalse(list(self.data.rglob("audio.mp3")))
         self.assertEqual(self.server.generations, 1)
+        self.assertEqual(self.server.uploads, 1)
+        self.assertEqual(self.server.labels, ["tts", "keep"])
+        polled, poll_log = self.start("once")
+        polled.wait(timeout=10)
+        self.assertEqual(polled.returncode, 0, poll_log.read_text())
+        self.assertEqual(self.server.labels, ["keep"])
+        self.assertEqual(self.job()["tag_removed"], 1)
         self.assertEqual(self.server.uploads, 1)
 
 

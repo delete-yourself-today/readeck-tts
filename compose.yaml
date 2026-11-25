@@ -18,7 +18,6 @@ services:
       # Post-listening actions; set any to "true" to opt in.
       # Use your listening user's ABS token with delete permission if deletion is enabled.
       # ARCHIVE_ON_FINISH: "false"
-      # REMOVE_TAG_ON_FINISH: "false"
       # DELETE_AUDIO_ON_FINISH: "false"
       # AUDIOBOOKSHELF_LIBRARY: "Podcasts"
       # AUDIOBOOKSHELF_PODCAST: "Readeck"

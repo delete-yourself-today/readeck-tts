@@ -4,6 +4,11 @@ Poll Readeck for articles labeled `tts`, generate narration through Kokoro,
 ElevenLabs, or Gemini, and upload saved audio as episodes of a `Readeck` podcast
 inside the existing Audiobookshelf `Podcasts` library.
 
+Add `tts` to request an episode, including for an archived article. The worker
+removes the label after Audiobookshelf confirms the episode is available.
+Apply the label again to generate a fresh episode with the current voice and
+model settings. Existing episodes are left in Audiobookshelf.
+
 ## Configuration
 
 All configuration uses environment variables. For local development, `.env` is
@@ -19,7 +24,7 @@ Required settings:
 | Variable | Meaning |
 | --- | --- |
 | `READECK_URL` | Readeck instance base URL, without `/api` |
-| `READECK_API_TOKEN` | Token with access to bookmarks and extracted articles, plus bookmark write access for completion actions |
+| `READECK_API_TOKEN` | Token with access to bookmarks and extracted articles, plus bookmark write access to clear requests |
 | `AUDIOBOOKSHELF_URL` | Audiobookshelf base URL, without `/api` |
 | `AUDIOBOOKSHELF_API_TOKEN` | Token for the account you listen with, with library access, upload permission, and delete permission when audio deletion is enabled |
 
@@ -43,7 +48,6 @@ Optional settings:
 | `GEMINI_MODEL` | `gemini-3.8-flash-lite-tts` | `gemini-3.8-flash-tts` or `gemini-3.8-flash-lite-tts` |
 | `GEMINI_VOICE` | `Charon` | Voice name/ID, or a comma-separated pool |
 | `ARCHIVE_ON_FINISH` | `false` | Archive the Readeck article after listening finishes |
-| `REMOVE_TAG_ON_FINISH` | `false` | Remove its TTS selection tag after listening finishes, preserving other labels |
 | `DELETE_AUDIO_ON_FINISH` | `false` | Delete the finished episode and its audio from Audiobookshelf |
 | `POLL_INTERVAL_SECONDS` | `300` | Time between discovery and listening-completion polls |
 | `RETRY_INTERVAL_SECONDS` | `30` | Service retry delay, indexing checks, and initial article retry delay |
@@ -90,7 +94,7 @@ The container stores state and temporary audio in `/data`. Choose its host
 storage through the volume mapping; the Compose template uses a named volume.
 For native development only, `DATA_DIR` can override the default `./data` path.
 
-The layout stays opinionated: one show, one episode per article, MP3 output,
+The layout stays opinionated: one show, one episode per request, MP3 output,
 sequential generation, immediate polling at startup, and audio cleanup after
 confirmed delivery. Naming, credentials, and timing are configurable; there are
 no alternate library layouts or backend-specific deployment requirements.
@@ -103,25 +107,24 @@ flag for delivered episodes. This uses the API token's listening account;
 marking an episode finished manually also triggers completion actions. Missing
 progress or a missing episode does not count as finished.
 
-All three completion actions are disabled by default and can be enabled
-independently with `ARCHIVE_ON_FINISH=true`, `REMOVE_TAG_ON_FINISH=true`, or
-`DELETE_AUDIO_ON_FINISH=true`. Boolean settings also accept `1`/`0`, `yes`/`no`,
+Both listening completion actions are disabled by default and can be enabled
+independently with `ARCHIVE_ON_FINISH=true` and `DELETE_AUDIO_ON_FINISH=true`.
+Boolean settings also accept `1`/`0`, `yes`/`no`,
 and `on`/`off`, ignoring case. Blank values use the default `false`.
-The enabled Readeck changes are sent together before deleting the Audiobookshelf
-episode and its server audio. Client downloads are outside this cleanup.
+When both actions are enabled, the worker archives the article before deleting
+the Audiobookshelf episode and its server audio. Client downloads are outside this cleanup.
 
 Listening completion and each successful action are stored in SQLite so failures
 retry on subsequent polls and survive restarts. `status` exposes `listened`,
-`archived`, `tag_removed`, `audio_deleted`, and `finish_error`; delivery remains
-`complete`, preventing regeneration. The `cleanup` command still only removes
-local temporary audio. Readeck errors preserve the server audio until the enabled
-Readeck changes succeed; an already deleted bookmark needs no further changes.
+`archived`, `audio_deleted`, and `finish_error`. An archive failure delays
+audio deletion when both actions are enabled. A deleted bookmark needs no
+further Readeck changes.
 
 Permission errors require operator intervention: `check`, `once`, and `run`
 reject an Audiobookshelf token without upload permission. When
 `DELETE_AUDIO_ON_FINISH=true`, they also check delete permission before processing.
-Readeck write permission is checked by the server when an enabled bookmark update
-is attempted. HTTP 401/403 responses produce a service-specific configuration
+Readeck write permission is checked by the server when a bookmark update is
+attempted. HTTP 401/403 responses produce a service-specific configuration
 error and exit the worker with status 1, rather than retrying article generation.
 For completion actions, the HTTP failure is also saved in `finish_error`; already
 successful steps remain recorded. Correct the token/permissions or disable the
@@ -132,8 +135,14 @@ These settings also apply to previously delivered jobs in the retained database.
 Enabling a previously disabled action applies it on a later poll, including after
 another action has already completed. Keep the database volume when upgrading.
 Only jobs matching the current Readeck source and saved Audiobookshelf destination
-are eligible. New snapshots remember the selection tag used for that article;
-older snapshots use the current `READECK_TAG` when removing it.
+are eligible for listening completion actions.
+
+Tag removal is part of delivery and preserves other labels. If it fails,
+`status` reports `tag_error` and the worker retries on later polls using the
+label saved with the job. Older snapshots use the current `READECK_TAG`.
+When upgrading with an existing database, tags on already delivered articles
+are cleared as fulfilled requests. The former `REMOVE_TAG_ON_FINISH` setting
+can be removed from deployment configuration.
 
 ## Run with Docker Compose
 
@@ -201,7 +210,8 @@ so the endpoint must support inline pause tokens. Very long articles scale down
 pauses to approximately 240 seconds total, below the server's default 300-second
 pause budget. Structured blocks, plain text, and the rendered speech input are
 saved in the job snapshot; retries reuse that exact input. Existing snapshots
-continue using their original input, and completed articles are not regenerated.
+continue using their original input. Apply the request label again after it clears
+to use the new settings on a previously delivered article.
 
 ElevenLabs v4 and v4 Turbo share one HTTP API and the same rendering: a restrained
 narration cue plus `[long pause]` after the title and before major headings
@@ -246,11 +256,11 @@ and back it up while the worker is stopped. `docker compose down` preserves it;
 `docker compose down -v` deletes
 the ledger and audio cache. Do not mount it from a network filesystem.
 
-Jobs are unique per Readeck instance URL and article ID. IDs and sync checkpoints
-are saved in one transaction, with an overlapping sync window. A file lock
-prevents two workers from using the same data directory concurrently. Completed
-jobs stay completed when articles or voice configuration change. Regeneration is
-not automatic.
+Each request has its own job key within a Readeck instance and article ID. Job
+discovery and sync checkpoints are saved in one transaction, with an overlapping
+sync window. A file lock prevents two workers from using the same data directory
+concurrently. Completed jobs remain in the database, including when their
+episodes are removed from Audiobookshelf.
 
 Each job snapshots its text, metadata, provider, model, voice, delivery options,
 rendered requests, and destination before generation. Audio is validated,
@@ -332,7 +342,7 @@ Local MP3 audio and partial downloads are deleted once Audiobookshelf confirms
 the matching episode is indexed. An upload's HTTP success response alone is
 not sufficient: audio stays cached while delivery is uncertain or indexing is
 pending. The completion record, episode IDs, and input snapshot remain in
-SQLite to prevent regeneration.
+SQLite so recovery retries only the remaining delivery steps.
 
 Completion is committed before deleting files. If a crash interrupts cleanup,
 or a file cannot be removed, cleanup remains pending and retries on startup
@@ -364,6 +374,7 @@ an acknowledged upload that is stuck in indexing; check the destination before
 using it. It does not reset completed, ignored, or cancelled jobs.
 `reconcile` only reads the remote podcast and marks the local job complete if
 its exact episode filename exists, then removes that job's local cached audio.
+The next worker poll clears the request label in Readeck.
 It never generates, uploads, or requests a scan. Run it with the worker stopped
 because it updates the local ledger. `cleanup` removes cached audio for already
 completed jobs without contacting any remote service; it also requires the

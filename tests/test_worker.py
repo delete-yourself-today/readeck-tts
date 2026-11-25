@@ -31,6 +31,12 @@ class FakeReadeck:
     def bookmark(self, article_id):
         return self.metadata
 
+    def finish(self, article_id, *, archive=False, remove_tag=None):
+        if archive:
+            self.metadata["is_archived"] = True
+        if remove_tag in self.metadata["labels"]:
+            self.metadata["labels"].remove(remove_tag)
+
     def article(self, article_id):
         return [{"type": "paragraph", "text": "A paragraph of article text."}]
 
@@ -113,13 +119,57 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(len(self.abs.uploads), 1)
         self.assertFalse((self.config.data_dir / "articles" / self.key).exists())
         self.assertEqual(self.job()["cleanup_pending"], 0)
+        self.assertEqual(self.job()["tag_removed"], 1)
+        self.assertEqual(len(self.state.status()), 1)
+
+    def test_reapplying_tag_to_archived_article_generates_with_current_voice(self):
+        self.readeck.metadata["is_archived"] = True
+        self.readeck.metadata["labels"].append("keep")
+        self.worker.work()
+        self.assertEqual(self.readeck.metadata["labels"], ["tts", "keep"])
+        self.retry_now()
+        self.assertEqual(self.readeck.metadata["labels"], ["keep"])
+        self.worker.config = replace(self.config, voice="af_bella")
+        self.readeck.metadata["labels"].append("tts")
+        self.worker.discover()
+        new_job = self.state.latest_job(self.config.readeck_url, "a")
+        new_key = new_job["key"]
+        self.assertNotEqual(new_key, self.key)
+        self.worker.work()
+        self.state.update(new_key, next_attempt=0)
+        self.worker.work()
+        self.assertEqual(self.abs.uploads, [self.key, new_key])
+        self.assertEqual(set(self.abs.indexed), {self.key, new_key})
+        self.assertEqual(json.loads(self.state.get(new_key)["snapshot"])["voice"], "af_bella")
+        self.assertTrue(self.readeck.metadata["is_archived"])
+        self.assertEqual(self.readeck.metadata["labels"], ["keep"])
+
+    def test_tag_removal_failure_retries_after_restart_without_recreating_episode(self):
+        self.worker.work()
+        finish = self.readeck.finish
+        self.readeck.finish = Mock(side_effect=RemoteError("Readeck", "PATCH", 503))
+        self.retry_now()
+        self.assertEqual(self.job()["state"], "complete")
+        self.assertIn("HTTP 503", self.job()["tag_error"])
+        self.worker.discover()
+        self.worker.work()
+        self.readeck.finish = finish
+        restarted = Worker(replace(self.config, label="other"), self.state,
+                           self.readeck, self.kokoro, self.abs)
+        restarted.discover()
+        restarted.work()
+        self.assertEqual(self.readeck.metadata["labels"], [])
+        self.assertEqual(self.job()["tag_removed"], 1)
+        self.assertIsNone(self.job()["tag_error"])
+        self.assertEqual(self.kokoro.calls, 1)
+        self.assertEqual(self.abs.uploads, [self.key])
 
     def prepare_listening(self):
-        self.config = replace(self.config, archive_on_finish=True,
-                              remove_tag_on_finish=True, delete_audio_on_finish=True)
+        self.config = replace(self.config, archive_on_finish=True, delete_audio_on_finish=True)
         self.worker.config = self.config
         self.worker.snapshot(self.job())
         self.worker.complete(self.key, ("show", "episode"))
+        self.worker.clear_delivered_tag(self.job())
         self.abs.is_finished = Mock(return_value=True)
         self.abs.delete_episode = Mock()
         self.readeck.finish = Mock()
@@ -131,7 +181,7 @@ class RecoveryTests(unittest.TestCase):
         calls.attach_mock(self.abs.delete_episode, "delete")
         self.worker.finish_listened()
         self.assertEqual([call[0] for call in calls.mock_calls], ["readeck", "delete"])
-        self.readeck.finish.assert_called_once_with("a", archive=True, remove_tag="tts")
+        self.readeck.finish.assert_called_once_with("a", archive=True)
         self.assertEqual(tuple(self.job()[name] for name in ("listened", "archived", "tag_removed", "audio_deleted")), (1, 1, 1, 1))
         self.worker.finish_listened()
         self.abs.is_finished.assert_called_once()
@@ -172,20 +222,19 @@ class RecoveryTests(unittest.TestCase):
     def test_each_finish_option_is_independent(self):
         from itertools import product
         self.prepare_listening()
-        for archive, tag, audio in product((False, True), repeat=3):
-            with self.subTest(archive=archive, tag=tag, audio=audio):
-                self.state.update(self.key, listened=0, archived=0, tag_removed=0, audio_deleted=0)
+        for archive, audio in product((False, True), repeat=2):
+            with self.subTest(archive=archive, audio=audio):
+                self.state.update(self.key, listened=0, archived=0, audio_deleted=0)
                 self.readeck.finish.reset_mock()
                 self.abs.delete_episode.reset_mock()
                 self.abs.is_finished.reset_mock()
-                self.worker.config = replace(self.config, archive_on_finish=archive,
-                                             remove_tag_on_finish=tag, delete_audio_on_finish=audio)
+                self.worker.config = replace(self.config, archive_on_finish=archive, delete_audio_on_finish=audio)
                 self.worker.finish_listened()
-                self.assertEqual(self.readeck.finish.called, archive or tag)
-                if archive or tag:
-                    self.readeck.finish.assert_called_once_with("a", archive=archive, remove_tag="tts" if tag else None)
+                self.assertEqual(self.readeck.finish.called, archive)
+                if archive:
+                    self.readeck.finish.assert_called_once_with("a", archive=True)
                 self.assertEqual(self.abs.delete_episode.called, audio)
-                self.assertEqual(self.abs.is_finished.called, archive or tag or audio)
+                self.assertEqual(self.abs.is_finished.called, archive or audio)
 
     def test_readeck_failure_preserves_audio_and_retries_after_restart(self):
         self.prepare_listening()
@@ -211,11 +260,10 @@ class RecoveryTests(unittest.TestCase):
         self.readeck.finish.assert_called_once()
         self.assertEqual(self.job()["audio_deleted"], 1)
 
-    def test_finish_uses_saved_tag_and_destination(self):
+    def test_finish_uses_saved_destination(self):
         self.prepare_listening()
-        self.worker.config = replace(self.config, label="other")
         self.worker.finish_listened()
-        self.readeck.finish.assert_called_once_with("a", archive=True, remove_tag="tts")
+        self.readeck.finish.assert_called_once_with("a", archive=True)
         self.state.update(self.key, audio_deleted=0)
         self.worker.config = replace(self.config, abs_url="http://other")
         self.abs.delete_episode.reset_mock()
@@ -256,8 +304,11 @@ class RecoveryTests(unittest.TestCase):
         snapshot = json.loads(self.job()["snapshot"])
         snapshot.pop("label")
         self.state.update(self.key, snapshot=json.dumps(snapshot))
-        self.worker.finish_listened()
-        self.readeck.finish.assert_called_once_with("a", archive=True, remove_tag="tts")
+        self.state.update(self.key, tag_removed=0)
+        self.readeck.metadata["labels"] = ["tts", "keep"]
+        self.worker.discover()
+        self.readeck.finish.assert_called_once_with("a", remove_tag="tts")
+        self.assertEqual(self.job()["tag_removed"], 1)
 
     def test_missing_bookmark_does_not_prevent_audio_cleanup(self):
         self.prepare_listening()
