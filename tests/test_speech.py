@@ -16,6 +16,7 @@ from readeck_tts.audio import join_audio, valid_chunk, write_audio
 from readeck_tts.clients import ConfigurationError, RemoteError, check_services
 from readeck_tts.config import Config, SPEECH_DEFAULTS
 from readeck_tts.narration import neighboring_text, render, speech_snapshot
+from readeck_tts.text import article_blocks
 from readeck_tts.speech import ElevenLabs, Gemini, speech_client
 
 
@@ -248,6 +249,33 @@ class HostedSpeechTests(unittest.TestCase):
 
 
 class NarrationPlanTests(unittest.TestCase):
+    def test_cleanup_keeps_prose_and_shortens_destinations_for_all_providers(self):
+        blocks = article_blocks(
+            '<p>Read <a href="https://example.com/report">the report</a> '
+            '(https://example.com/wiki/Foo_(bar)).</p>'
+            '<p>https://example.com/standalone?tracking=1</p><p>example.org/guide</p><p>✦</p><p>***</p>'
+            '<pre><code>print("Skip this code")</code></pre><pre>Keep this verse.</pre>'
+            '<p>Visit https://www.example.com/report?tracking=1#part.</p>'
+            '<p>Use <code>npm</code> for the 3.5% sample.</p>'
+        )
+        for provider in ("kokoro", "elevenlabs", "gemini"):
+            with self.subTest(provider=provider):
+                plan = speech_snapshot(blocks, provider)
+                for text in [plan["speech_input"], *plan.get("speech_chunks", [])]:
+                    for expected in ("Read the report.", "Visit example.com.", "Keep this verse.",
+                                     "Use npm for the 3.5% sample."):
+                        self.assertIn(expected, text)
+                    for artifact in ("https://", "tracking", "example.org", "Skip this code", "✦", "***"):
+                        self.assertNotIn(artifact, text)
+
+    def test_elevenlabs_context_uses_cleaned_text_and_artifact_only_plans_are_empty(self):
+        prose = "Earlier sentence. " * 155 + "Visit https://example.com/report."
+        blocks = article_blocks(f"<p>{prose}</p><p>{'Later sentence. ' * 150}</p>")
+        plan = speech_snapshot(blocks, "elevenlabs")
+        self.assertEqual(plan["speech_contexts"][1]["previous_text"], "Earlier sentence. Visit example.com.")
+        artifacts = article_blocks("<p>[https://example.com/path]</p><p>———</p><pre><code>x</code></pre>")
+        self.assertEqual(speech_snapshot(artifacts, "elevenlabs")["speech_input"], "")
+
     def test_long_articles_are_bounded_without_losing_or_repeating_words(self):
         blocks = [{"type": "title", "text": "Article title"},
                   {"type": "paragraph", "text": "A fairly long sentence about an idea. " * 1500}]

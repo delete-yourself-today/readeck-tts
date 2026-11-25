@@ -373,6 +373,13 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(self.kokoro.generate.call_args.args[0], snapshot)
         self.assertEqual(self.job()["state"], "awaiting_index")
 
+    def test_artifact_only_article_is_ignored_without_requesting_audio(self):
+        self.readeck.metadata["title"] = "https://example.org/article"
+        self.readeck.article = Mock(return_value=article_blocks("<pre><code>hello()</code></pre>"))
+        self.worker.work()
+        self.assertEqual(self.job()["state"], "ignored")
+        self.assertEqual(self.kokoro.calls, 0)
+
     def test_provider_switch_resumes_saved_job_with_original_provider(self):
         config = replace(self.config, provider="elevenlabs", model="eleven_v4_turbo",
                          voice="voice-one", elevenlabs_token="secret")

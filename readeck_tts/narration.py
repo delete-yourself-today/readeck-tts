@@ -3,7 +3,7 @@
 import re
 import textwrap
 
-from .text import kokoro_input, narration_input
+from .text import clean_narration_text, kokoro_input, narration_input
 
 
 STYLE = "Thoughtful, measured narration; restrained expression, natural phrasing, clear paragraph transitions."
@@ -67,8 +67,9 @@ def neighboring_text(blocks, *, tail=False, limit=500):
 
 
 def speech_snapshot(blocks, provider):
-    blocks = [block for block in blocks if block["text"].strip()]
-    full_input = render(blocks, provider)
+    blocks = [block | {"text": text} for block in blocks
+              if block["type"] != "code" and (text := clean_narration_text(block["text"]))]
+    full_input = render(blocks, provider) if blocks else ""
     if provider == "kokoro":
         return {"provider": provider, "speech_input": full_input}
     chunks = []

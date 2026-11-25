@@ -171,10 +171,14 @@ class Worker:
             raise RuntimeError("Readeck returned an empty article")
         title = bookmark.get("title") or "Untitled"
         blocks = [{"type": "title", "text": title}] + blocks
+        speech = speech_snapshot(blocks, self.config.provider)
+        if not speech["speech_input"]:
+            self.state.update(job["key"], state="ignored", error="Article has no narratable text")
+            return None
         author = ", ".join(bookmark.get("authors") or []) or bookmark.get("site_name") or "Readeck"
         snapshot = {
             "text": "\n\n".join(block["text"] for block in blocks), "title": title,
-            "blocks": blocks, **speech_snapshot(blocks, self.config.provider),
+            "blocks": blocks, **speech,
             "author": safe_component(author), "url": bookmark.get("url", ""),
             "article_id": job["article_id"], "label": self.config.label, "voice": random.choice(self.config.voices), "model": self.config.model,
             "created": bookmark.get("created", ""),

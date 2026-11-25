@@ -1,11 +1,54 @@
 from html.parser import HTMLParser
 import re
+from urllib.parse import urlsplit
+
+
+_WEB_URL = (
+    r"(?<![\w@./-])(?:https?://|www\.|(?:[a-z0-9-]+\.)+[a-z]{2,}/)"
+    r'''(?:[^\s<>()[\]{}"'“”‘’。！？、，；：]|\([^\s<>()]+\))*'''
+)
+_NARRATION_LINK = re.compile(
+    rf"(?P<space>[^\S\n]?)(?:\(\s*{_WEB_URL}\s*\)|\[\s*{_WEB_URL}\s*\]|(?P<url>{_WEB_URL}))",
+    re.IGNORECASE,
+)
+_DESTINATION_PREFIX = re.compile(r"\b(?:at|from|go to|open|see|visit)\s*$", re.IGNORECASE)
+_DECORATIVE_SEPARATOR = re.compile(r"[-–—_*=~•·●◆◇✦✧─━#.\s]+")
+
+
+def clean_narration_text(text):
+    """Omit bare links except for hostnames used as destinations in prose."""
+    def replace_link(match):
+        prefix = text[:match.start()]
+        url = match["url"]
+        punctuation = ""
+        if url:
+            address = url.rstrip(".,;:!?…")
+            punctuation = url[len(address):] if prefix.strip() else ""
+            if _DESTINATION_PREFIX.search(prefix):
+                try:
+                    host = urlsplit(address if address.lower().startswith(("http://", "https://"))
+                                    else "//" + address).hostname
+                except ValueError:
+                    host = None
+                if host:
+                    return match["space"] + host.removeprefix("www.") + punctuation
+        following = text[match.end():match.end() + 1]
+        if punctuation or not following or following.isspace() or following in ".,;:!?…":
+            return punctuation
+        return match["space"]
+
+    cleaned = _NARRATION_LINK.sub(replace_link, text).strip()
+    if _DECORATIVE_SEPARATOR.fullmatch(cleaned):
+        return ""
+    if cleaned != text.strip() and not any(char.isalnum() for char in cleaned):
+        return ""
+    return cleaned
 
 
 class ArticleParser(HTMLParser):
     boundaries = {"p", "div", "section", "article", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "br", "hr", "tr", "pre"}
     kinds = {**{f"h{level}": "heading" for level in range(1, 7)},
-             "li": "list_item", "blockquote": "blockquote", "pre": "pre"}
+             "li": "list_item", "blockquote": "blockquote", "pre": "pre", "code": "code"}
     excluded = {"script", "style", "noscript", "svg", "nav"}
 
     def __init__(self):
@@ -31,7 +74,9 @@ class ArticleParser(HTMLParser):
             self.hidden.append(tag)
         if self.hidden:
             return
-        if tag in self.boundaries:
+        if tag == "code" and "pre" not in self.context:
+            return
+        if tag in self.boundaries or tag == "code":
             self.flush()
         if tag in self.kinds:
             self.context.append(tag)
@@ -41,7 +86,7 @@ class ArticleParser(HTMLParser):
             if tag == self.hidden[-1]:
                 self.hidden.pop()
         else:
-            if tag in self.boundaries:
+            if tag in self.boundaries or (tag == "code" and "code" in self.context):
                 self.flush()
             if tag in self.context:
                 index = len(self.context) - 1 - self.context[::-1].index(tag)
